@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="fa">
 <head>
   <meta charset="UTF-8" />
@@ -46,28 +46,30 @@
         </div>
       </div>
 
-      <div class="price-edit">
-        <div class="price-input-wrap">
-          <input type="number" id="manualEntryInput" class="manual-price-input" placeholder="Price" step="any" inputmode="decimal" />
-          <button type="button" class="price-check-btn" onclick="GoldAI.applyManualPrice()" title="اعمال قیمت دستی">✓</button>
+      <div class="header-middle">
+        <div class="market-time-section">
+          <div class="market-badge">
+            <span class="market-status" id="marketStatus">—</span>
+          </div>
+          <div id="timeDisplay" class="time-display">
+            <div class="date-row" id="persianDate">—</div>
+            <div class="time-row" id="persianTime">—</div>
+          </div>
         </div>
-        <button type="button" class="price-refresh-btn" onclick="GoldAI.refreshPrice()" title="برگشت به قیمت آنلاین">↻</button>
-        <button type="button" class="btn-icon" id="themeToggle" onclick="GoldAI.toggleTheme()">🌙</button>
+
+        <div class="system-power-section">
+          <button type="button" class="system-power-btn off" id="systemPowerBtn" onclick="GoldAI.toggleSystemPower()" aria-pressed="false" title="سیستم را روشن/خاموش کنید">
+            <span class="system-power-dot"></span>
+            <span class="system-power-label" id="systemPowerLabel">SYSTEM OFF</span>
+          </button>
+        </div>
+
+        <button type="button" class="btn-icon" id="themeToggle" onclick="GoldAI.toggleTheme()" title="تغییر تم">🌙</button>
       </div>
 
       <div id="marketClosedWarning" class="market-warning hidden">⛔ بازار بسته است</div>
-      <div class="market-badge">
-        <span class="market-status" id="marketStatus">—</span>
-        <span class="session" id="marketSession">—</span>
-      </div>
-      <div id="timeDisplay" class="time-display">
-        <div class="date-row" id="persianDate">—</div>
-      </div>
 
       <div class="controls-row">
-        <!-- Touch-friendly timeframe selector. Still calls the SAME
-             GoldAI.setActiveTimeframe(tf) used by the original <select> —
-             no new data path, just a bigger hit-area UI on top of it. -->
         <div class="tf-touch-wrap" id="tfTouchWrap" role="group" aria-label="تایم‌فریم فعال">
           <button type="button" class="tf-touch-btn" data-tf="m1" onclick="GoldAI.setActiveTimeframe('m1')">M1</button>
           <button type="button" class="tf-touch-btn active" data-tf="m5" onclick="GoldAI.setActiveTimeframe('m5')">M5</button>
@@ -76,9 +78,6 @@
           <button type="button" class="tf-touch-btn" data-tf="h1" onclick="GoldAI.setActiveTimeframe('h1')">H1</button>
           <button type="button" class="tf-touch-btn" data-tf="h4" onclick="GoldAI.setActiveTimeframe('h4')">H4</button>
         </div>
-        <!-- Original select kept in the DOM (hidden) so any existing code that
-             reads/sets #activeTimeframeSelect (e.g. GoldAI.setActiveTimeframe
-             syncing sel.value) keeps working untouched. -->
         <select id="activeTimeframeSelect" class="hidden" onchange="GoldAI.setActiveTimeframe(this.value)">
           <option value="m1">M1</option>
           <option value="m5" selected>M5</option>
@@ -89,7 +88,7 @@
         </select>
         <button type="button" class="btn-ghost btn-settings-row" onclick="GoldAI.openSettingsModal()">⚙️ تنظیمات</button>
       </div>
-        <div class="system-power-row"><button type="button" class="system-power-btn off" id="systemPowerBtn" onclick="GoldAI.toggleSystemPower()" aria-pressed="false"><span class="system-power-dot" id="systemPowerDot"></span><span class="system-power-label" id="systemPowerLabel">SYSTEM OFF</span></button></div></header>
+    </header>
 
     <div id="panel-home" class="panel">
 
@@ -139,9 +138,6 @@
           <h3>نمودار زنده — <span id="chartTfLabel">M5</span></h3>
           <span class="chart-source-badge" id="chartSourceBadge">MT5</span>
         </div>
-        <!-- js/chart.js renders into this canvas using the SAME
-             window.GoldAI_Data.candles[activeTF] array app.js already
-             uses for analysis — no new data path, no new fetch. -->
         <canvas id="liveChartCanvas" class="live-chart-canvas" aria-label="نمودار کندل زنده XAUUSD."></canvas>
         <div class="chart-empty-note hidden" id="chartEmptyNote">داده‌ای برای نمایش نیست</div>
       </div>
@@ -156,7 +152,7 @@
           <button type="button" class="btn-ghost date-range-apply" onclick="GoldAI.applyDateRange && GoldAI.applyDateRange()">اعمال بازه</button>
           <button type="button" class="btn-ghost date-range-clear" onclick="GoldAI.clearDateRange && GoldAI.clearDateRange()">پاک کردن</button>
         </div>
-        <div class="date-range-hint">بازه فقط روی نمایش نمودار اعمال می‌شود؛ تحلیل و سیگنال بر اساس تایم‌فریم فعال و آخرین کندل‌های MT5 محاسبه می‌شوند.</div>
+        <div class="date-range-hint">بازه فقط روی نمایش نمودار اعمال می‌شود؛ تحلیل و سیگنال بر اساس تایم‌فریم فعال و آخرین کندل‌ها است.</div>
       </div>
 
       <button type="button" class="link-row" onclick="GoldAI.showPanel('details')">
@@ -215,9 +211,6 @@
         </div>
       </div>
 
-      <!-- Social links — config-driven, no guessed URLs. Values come from
-           window.GoldAI_Config.SOCIAL_LINKS (js/config.js). Empty/"#" until
-           the real URLs are filled in. -->
       <div class="card social-card" id="socialCard">
         <h3 class="social-card-title">شبکه‌های اجتماعی</h3>
         <div class="social-row" id="socialRow"></div>
@@ -289,7 +282,7 @@
           <input id="btRisk" type="number" step="0.1" placeholder="Risk %" value="1" class="btn-ghost" style="padding:8px 10px;width:80px">
           <input id="btMinConf" type="number" placeholder="Min Conf" value="68" class="btn-ghost" style="padding:8px 10px;width:90px">
           <input id="btSlippage" type="number" step="1" placeholder="Slippage (pts)" value="2" class="btn-ghost" style="padding:8px 10px;width:110px">
-          <input id="btCount" type="number" step="100" placeholder="Bars" value="1500" class="btn-ghost" style="padding:8px 10px;width:90px" title="Legacy: only used when Range = none. Otherwise sets the max bars fetched per MT5 request chunk.">
+          <input id="btCount" type="number" step="100" placeholder="Bars" value="1500" class="btn-ghost" style="padding:8px 10px;width:90px" title="Legacy: only used when Range = none. Otherwise ignored.">
         </div>
         <div id="btCustomRangeWrap" class="perf-actions hidden" style="margin-bottom:10px">
           <label style="display:flex;flex-direction:column;font-size:11px;gap:4px">Start
@@ -371,4 +364,3 @@
   <script src="js/speed-patch.js"></script>
 </body>
 </html>
-
