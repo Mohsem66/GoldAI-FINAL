@@ -1,0 +1,43 @@
+{
+  "state": "RUNNING",
+  "mt5Connected": true,
+  "lastHeartbeat": "2026-09-09T09:56:38.497Z",
+  "lastSuccessfulRun": "2026-09-09T09:56:38.497Z",
+  "lastSignal": {
+    "id": "1788947717949_M5_8mdvp8",
+    "timestamp": "2026-09-09T09:55:17.949Z",
+    "symbol": "XAUUSD.",
+    "timeframe": "M5",
+    "mode": "scalp",
+    "candleTimestamp": 1788947400,
+    "candleTimeISO": "2026-09-09T09:50:00.000Z",
+    "signal": "WAIT 🟡",
+    "price": 4391.04,
+    "score": 12,
+    "confidence": 12,
+    "reason": "HH + HL → Uptrend · Bearish BOS (str 0.181%) · EMA stack 20>50>200 · Price below EMA20/50 · Price above EMA200 · EMA slopes down · RSI oversold · No divergence · MACD hist < 0 · MACD below zero · ADX range / weak trend · −DI > +DI",
+    "warnings": [
+      "Range market — reduced confidence",
+      "Confidence 12 < 68",
+      "HTF weak momentum",
+      "ADX range → lower confidence"
+    ],
+    "stopLoss": null,
+    "tp1": null,
+    "tp2": null,
+    "tp3": null,
+    "source": "MT5",
+    "dataSource": "MT5",
+    "workerStatus": "RUNNING",
+    "executionEligible": false,
+    "executionStatus": "NOT_EXECUTED"
+  },
+  "startedAt": "2026-09-09T05:06:41.951Z",
+  "message": "ok",
+  "account": {
+    "login": 49451,
+    "server": "ToraFx-Trade",
+    "symbol": "XAUUSD."
+  },
+  "server": "ToraFx-Trade"
+}
