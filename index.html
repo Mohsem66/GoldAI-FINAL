@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="fa">
 <head>
   <meta charset="UTF-8" />
@@ -89,7 +89,7 @@
         </select>
         <button type="button" class="btn-ghost btn-settings-row" onclick="GoldAI.openSettingsModal()">⚙️ تنظیمات</button>
       </div>
-    </header>
+        <div class="system-power-row"><button type="button" class="system-power-btn off" id="systemPowerBtn" onclick="GoldAI.toggleSystemPower()" aria-pressed="false"><span class="system-power-dot" id="systemPowerDot"></span><span class="system-power-label" id="systemPowerLabel">SYSTEM OFF</span></button></div></header>
 
     <div id="panel-home" class="panel">
 
@@ -371,3 +371,4 @@
   <script src="js/speed-patch.js"></script>
 </body>
 </html>
+

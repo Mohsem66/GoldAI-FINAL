@@ -1,4 +1,4 @@
-/* =====================================================
+﻿/* =====================================================
    GoldAI Pro — Design System (Dark Premium / Gold Accent)
    UI-ONLY stylesheet. No logic here — pure presentation.
    ===================================================== */
@@ -949,3 +949,6 @@ th { position: sticky; top: 0; background: var(--card-2); }
     to { transform: translateY(0) scale(1); opacity: 1; }
   }
 }
+
+
+.system-power-row{display:flex;align-items:center;justify-content:center;margin:8px 0 0}.system-power-btn{display:flex;align-items:center;justify-content:center;gap:9px;min-height:46px;padding:8px 18px;border:1px solid rgba(255,255,255,.14);border-radius:12px;background:rgba(20,20,24,.92);color:#fff;font-weight:800;font-size:13px;letter-spacing:.4px;cursor:pointer;transition:.2s}.system-power-btn.off{border-color:rgba(220,70,70,.45);color:#ff7777}.system-power-btn.on{border-color:rgba(61,206,122,.55);color:#3dce7a}.system-power-dot{width:10px;height:10px;border-radius:50%;background:#ff5555;flex:0 0 auto}.system-power-btn.on .system-power-dot{background:#3dce7a;box-shadow:0 0 0 0 rgba(61,206,122,.6);animation:pulseDot 1.6s infinite}@media(max-width:600px){.system-power-row{width:100%;margin:9px 0 0}.system-power-btn{width:min(340px,100%);min-height:52px;font-size:14px;border-radius:13px}}

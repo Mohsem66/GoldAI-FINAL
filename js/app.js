@@ -515,6 +515,47 @@ window.GoldAI = {
     this.updateExecutionPanel(this.lastResult);
   },
 
+  reflectSystemPowerUI(enabled) {
+    const btn = document.getElementById("systemPowerBtn");
+    const label = document.getElementById("systemPowerLabel");
+    if (!btn || !label) return;
+    btn.classList.toggle("on", Boolean(enabled));
+    btn.classList.toggle("off", !Boolean(enabled));
+    btn.setAttribute("aria-pressed", Boolean(enabled) ? "true" : "false");
+    label.textContent = Boolean(enabled) ? "SYSTEM ON" : "SYSTEM OFF";
+    const auto = document.getElementById("autoTradeToggle");
+    if (auto) auto.checked = Boolean(enabled);
+  },
+
+  async refreshSystemPowerFromServer() {
+    try {
+      const r = await fetch(`${this.backendURL}/mt5/system-state`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      this.reflectSystemPowerUI(Boolean(data.enabled));
+      return Boolean(data.enabled);
+    } catch (e) {
+      console.warn("SYSTEM state read failed:", e.message);
+      return null;
+    }
+  },
+
+  async toggleSystemPower() {
+    const btn = document.getElementById("systemPowerBtn");
+    if (btn) btn.disabled = true;
+    try {
+      const current = btn?.getAttribute("aria-pressed") === "true";
+      this.setAutoTradingEnabled(!current);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      await this.refreshSystemPowerFromServer();
+    } catch (e) {
+      console.error("SYSTEM power toggle failed:", e);
+      await this.refreshSystemPowerFromServer();
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  },
+
   setAutoTradingEnabled(on) {
     window.GoldAI_Config.AUTO_TRADING_ENABLED = Boolean(on);
     const stored = JSON.parse(localStorage.getItem("goldai_settings") || "{}");
