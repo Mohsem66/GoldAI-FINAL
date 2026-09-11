@@ -70,15 +70,7 @@
       <div id="marketClosedWarning" class="market-warning hidden">⛔ بازار بسته است</div>
 
       <div class="controls-row">
-        <div class="tf-touch-wrap" id="tfTouchWrap" role="group" aria-label="تایم‌فریم فعال">
-          <button type="button" class="tf-touch-btn" data-tf="m1" onclick="GoldAI.setActiveTimeframe('m1')">M1</button>
-          <button type="button" class="tf-touch-btn active" data-tf="m5" onclick="GoldAI.setActiveTimeframe('m5')">M5</button>
-          <button type="button" class="tf-touch-btn" data-tf="m15" onclick="GoldAI.setActiveTimeframe('m15')">M15</button>
-          <button type="button" class="tf-touch-btn" data-tf="m30" onclick="GoldAI.setActiveTimeframe('m30')">M30</button>
-          <button type="button" class="tf-touch-btn" data-tf="h1" onclick="GoldAI.setActiveTimeframe('h1')">H1</button>
-          <button type="button" class="tf-touch-btn" data-tf="h4" onclick="GoldAI.setActiveTimeframe('h4')">H4</button>
-        </div>
-        <select id="activeTimeframeSelect" class="hidden" onchange="GoldAI.setActiveTimeframe(this.value)">
+        <select id="activeTimeframeSelect" class="tf-dropdown" onchange="GoldAI.setActiveTimeframe(this.value)">
           <option value="m1">M1</option>
           <option value="m5" selected>M5</option>
           <option value="m15">M15</option>
@@ -92,6 +84,7 @@
 
     <div id="panel-home" class="panel">
 
+      <!-- Signal Card -->
       <div class="card signal-card" style="text-align:right">
         <div class="signal-card-head">
           <h3>سیگنال فعلی</h3>
@@ -133,32 +126,7 @@
         </div>
       </div>
 
-      <div class="card chart-card">
-        <div class="chart-card-head">
-          <h3>نمودار زنده — <span id="chartTfLabel">M5</span></h3>
-          <span class="chart-source-badge" id="chartSourceBadge">MT5</span>
-        </div>
-        <canvas id="liveChartCanvas" class="live-chart-canvas" aria-label="نمودار کندل زنده XAUUSD."></canvas>
-        <div class="chart-empty-note hidden" id="chartEmptyNote">داده‌ای برای نمایش نیست</div>
-      </div>
-
-      <div class="card date-range-card">
-        <div class="date-range-head"><h3>بازه زمانی</h3></div>
-        <div class="date-range-grid">
-          <label>از تاریخ<input type="date" id="dateRangeFrom" class="date-range-input"></label>
-          <label>تا تاریخ<input type="date" id="dateRangeTo" class="date-range-input"></label>
-        </div>
-        <div class="date-range-actions">
-          <button type="button" class="btn-ghost date-range-apply" onclick="GoldAI.applyDateRange && GoldAI.applyDateRange()">اعمال بازه</button>
-          <button type="button" class="btn-ghost date-range-clear" onclick="GoldAI.clearDateRange && GoldAI.clearDateRange()">پاک کردن</button>
-        </div>
-        <div class="date-range-hint">بازه فقط روی نمایش نمودار اعمال می‌شود؛ تحلیل و سیگنال بر اساس تایم‌فریم فعال و آخرین کندل‌ها است.</div>
-      </div>
-
-      <button type="button" class="link-row" onclick="GoldAI.showPanel('details')">
-        <span>🧩 جزئیات تحلیل</span><span class="chev">‹</span>
-      </button>
-
+      <!-- Execution Panel -->
       <div id="tradeExecutionPanel" class="card hidden">
         <div class="exec-head">
           <h3>اجرای معامله</h3>
@@ -193,21 +161,16 @@
         <input type="number" id="userTp3Mult" value="5.0" />
       </div>
 
-      <div class="card risk-card">
-        <div class="risk-header"><h3>مدیریت ریسک</h3>
+      <!-- Risk Card Summary (Compact) -->
+      <div class="card risk-card-compact">
+        <div class="risk-header"><h3>ریسک و مدیریت</h3>
           <span id="riskGuardBadge" class="rg-badge rg-ok">🛡️ ریسک فعال</span>
         </div>
-        <div class="risk-main-row risk-main-row-5">
-          <div class="risk-item"><span>سرمایه</span><b id="capitalText">10000</b></div>
-          <div class="risk-item"><span>ریسک</span><b id="riskText">1%</b></div>
-          <div class="risk-item"><span>حد ضرر ($)</span><b id="maxLossText">100</b></div>
-          <div class="risk-item"><span>معاملات امروز</span><b id="rgTrades">0 / 5</b></div>
-          <div class="risk-item"><span>حد روزانه</span><b id="rgDailyLimit">3R</b></div>
-        </div>
-        <div class="bar-track risk-progress"><div id="riskProgressBar" style="width:0%;background:var(--green)"></div></div>
-        <div class="risk-footer-row">
-          <span><b id="rgRealizedRValue">0</b>R محقق‌شده <span id="rgStatusHint" title="وضعیت Risk Guard">ⓘ</span></span>
-          <span class="rlink" onclick="GoldAI.resetRiskGuard()">ریست حد روزانه ›</span>
+        <div class="risk-compact-row">
+          <div class="risk-item-compact"><span>سرمایه</span><b id="capitalText">10000</b></div>
+          <div class="risk-item-compact"><span>ریسک</span><b id="riskText">1%</b></div>
+          <div class="risk-item-compact"><span>معاملات امروز</span><b id="rgTrades">0 / 5</b></div>
+          <div class="risk-item-compact"><span>حد روزانه</span><b id="rgDailyLimit">3R</b></div>
         </div>
       </div>
 
@@ -215,10 +178,54 @@
         <h3 class="social-card-title">شبکه‌های اجتماعی</h3>
         <div class="social-row" id="socialRow"></div>
       </div>
+
     </div>
 
-    <div id="panel-details" class="panel hidden">
-      <div class="panel-back" onclick="GoldAI.showPanel('home')">‹ بازگشت به داشبورد</div>
+    <!-- Chart Panel -->
+    <div id="panel-chart" class="panel hidden">
+      <div class="card chart-card">
+        <div class="chart-card-head">
+          <h3>نمودار زنده — <span id="chartTfLabel">M5</span></h3>
+          <span class="chart-source-badge" id="chartSourceBadge">MT5</span>
+        </div>
+        <canvas id="liveChartCanvas" class="live-chart-canvas" aria-label="نمودار کندل زنده XAUUSD."></canvas>
+        <div class="chart-empty-note hidden" id="chartEmptyNote">داده‌ای برای نمایش نیست</div>
+      </div>
+
+      <div class="card date-range-card">
+        <div class="date-range-head"><h3>بازه زمانی</h3></div>
+        <div class="date-range-grid">
+          <label>از تاریخ<input type="date" id="dateRangeFrom" class="date-range-input"></label>
+          <label>تا تاریخ<input type="date" id="dateRangeTo" class="date-range-input"></label>
+        </div>
+        <div class="date-range-actions">
+          <button type="button" class="btn-ghost date-range-apply" onclick="GoldAI.applyDateRange && GoldAI.applyDateRange()">اعمال بازه</button>
+          <button type="button" class="btn-ghost date-range-clear" onclick="GoldAI.clearDateRange && GoldAI.clearDateRange()">پاک کردن</button>
+        </div>
+        <div class="date-range-hint">بازه فقط روی نمایش نمودار اعمال می‌شود؛ تحلیل و سیگنال بر اساس تایم‌فریم فعال و آخرین کندل‌ها است.</div>
+      </div>
+    </div>
+
+    <!-- Signal Analysis Panel -->
+    <div id="panel-signal" class="panel hidden">
+      <div class="card">
+        <h3>📊 تحلیل سیگنال</h3>
+        <div id="signalAnalysisContent">
+          <!-- Signal explanation content will be rendered here -->
+          <div class="signal-explanation-placeholder">
+            <p>سیگنال جدیدی تولید نشده‌است. لطفاً از داشبورد «تحلیل مجدد» را انتخاب کنید.</p>
+          </div>
+        </div>
+      </div>
+
+      <button type="button" class="link-row" onclick="GoldAI.showPanel('analysis')">
+        <span>📈 جزئیات کامل اندیکاتورها</span><span class="chev">‹</span>
+      </button>
+    </div>
+
+    <!-- Analysis Panel (Indicators) -->
+    <div id="panel-analysis" class="panel hidden">
+      <div class="panel-back" onclick="GoldAI.showPanel('signal')">‹ بازگشت به سیگنال</div>
       <div class="card">
         <h3>📊 جزئیات اندیکاتورها</h3>
         <div class="detail-grid">
@@ -235,10 +242,10 @@
         </div>
       </div>
       <div class="card">
-        <h3>🧠 AI</h3>
+        <h3>🧠 AI Analysis</h3>
         <div class="detail-grid">
           <div class="detail-row"><span>AI Signal</span><span id="dAiSignal">—</span></div>
-          <div class="detail-row"><span>AI Conf</span><span id="dAiConf">—</span></div>
+          <div class="detail-row"><span>AI Confidence</span><span id="dAiConf">—</span></div>
           <div class="detail-row"><span>CPI</span><span id="dAiCpi">—</span></div>
           <div class="detail-row"><span>Fed</span><span id="dAiFed">—</span></div>
         </div>
@@ -246,6 +253,28 @@
       </div>
     </div>
 
+    <!-- Risk Panel -->
+    <div id="panel-risk" class="panel hidden">
+      <div class="card">
+        <div class="risk-header"><h3>مدیریت ریسک</h3>
+          <span id="riskGuardBadge2" class="rg-badge rg-ok">🛡️ ریسک فعال</span>
+        </div>
+        <div class="risk-main-row risk-main-row-5">
+          <div class="risk-item"><span>سرمایه</span><b id="capitalText2">10000</b></div>
+          <div class="risk-item"><span>ریسک</span><b id="riskText2">1%</b></div>
+          <div class="risk-item"><span>حد ضرر ($)</span><b id="maxLossText">100</b></div>
+          <div class="risk-item"><span>معاملات امروز</span><b id="rgTrades2">0 / 5</b></div>
+          <div class="risk-item"><span>حد روزانه</span><b id="rgDailyLimit2">3R</b></div>
+        </div>
+        <div class="bar-track risk-progress"><div id="riskProgressBar" style="width:0%;background:var(--green)"></div></div>
+        <div class="risk-footer-row">
+          <span><b id="rgRealizedRValue">0</b>R محقق‌شده <span id="rgStatusHint" title="وضعیت Risk Guard">ⓘ</span></span>
+          <span class="rlink" onclick="GoldAI.resetRiskGuard()">ریست حد روزانه ›</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Signals History Panel -->
     <div id="panel-signals" class="panel hidden">
       <div class="card">
         <h3>📈 عملکرد و تاریخچه سیگنال‌ها</h3>
@@ -263,6 +292,7 @@
       </div>
     </div>
 
+    <!-- Backtest Panel -->
     <div id="panel-backtest" class="panel hidden">
       <div class="card">
         <h3>🎯 بک‌تست</h3>
@@ -303,6 +333,7 @@
       </div>
     </div>
 
+    <!-- Auto Trading Panel -->
     <div id="panel-trades" class="panel hidden">
       <div class="card">
         <h3>⚡ معاملات خودکار</h3>
@@ -325,12 +356,13 @@
       </div>
     </div>
 
+    <!-- Bottom Navigation -->
     <nav class="nav">
       <button type="button" class="nav-btn active" data-panel="home" onclick="GoldAI.showPanel('home')"><span class="nav-icon">🏠</span><span>داشبورد</span></button>
-      <button type="button" class="nav-btn" data-panel="signals" onclick="GoldAI.showPanel('signals')"><span class="nav-icon">📶</span><span>سیگنال‌ها</span></button>
-      <button type="button" class="nav-btn" data-panel="backtest" onclick="GoldAI.showPanel('backtest')"><span class="nav-icon">🕐</span><span>بک‌تست</span></button>
-      <button type="button" class="nav-btn" data-panel="trades" onclick="GoldAI.showPanel('trades')"><span class="nav-icon">💼</span><span>معاملات</span></button>
-      <button type="button" class="nav-btn" onclick="GoldAI.openSettingsModal()"><span class="nav-icon">⚙️</span><span>تنظیمات</span></button>
+      <button type="button" class="nav-btn" data-panel="chart" onclick="GoldAI.showPanel('chart')"><span class="nav-icon">📈</span><span>نمودار</span></button>
+      <button type="button" class="nav-btn" data-panel="signal" onclick="GoldAI.showPanel('signal')"><span class="nav-icon">📊</span><span>سیگنال</span></button>
+      <button type="button" class="nav-btn" data-panel="risk" onclick="GoldAI.showPanel('risk')"><span class="nav-icon">⚠️</span><span>ریسک</span></button>
+      <button type="button" class="nav-btn" data-panel="backtest" onclick="GoldAI.showPanel('backtest')"><span class="nav-icon">🎯</span><span>بک‌تست</span></button>
     </nav>
   </div>
 
