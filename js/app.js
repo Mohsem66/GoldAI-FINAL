@@ -5,7 +5,20 @@
 window.GoldAI = {
 
   lastResult: null,
+  _workerPollTimer: null,
+  _workerPollBusy: false,
+  _lastHydratedCandleTs: null,
   backendURL: 'http://localhost:5000/api',
+  // Demo: set window.GOLD_AI_API_TOKEN or localStorage goldai_api_token (same value as backend GOLD_AI_API_TOKEN).
+  // Never hardcode production secrets in repo.
+  apiAuthHeaders() {
+    const t = (typeof window !== 'undefined' && window.GOLD_AI_API_TOKEN)
+      || (function(){ try { return localStorage.getItem('goldai_api_token'); } catch(_){ return null; } })()
+      || '';
+    const h = { 'Content-Type': 'application/json' };
+    if (t) h['X-GoldAI-Token'] = t;
+    return h;
+  },
   currentUID: null,
   signalHistory: [],
   dynamicWeights: {},
@@ -20,10 +33,34 @@ window.GoldAI = {
     this.updatePriceUI();
     this.updateMarketClock();
     this.updateRiskUI();
+    // Sync MANUAL/AUTO dashboard buttons + execution panel visibility on first paint
+    // (display-only; lastResult is null pre-analysis, so panel stays hidden as before).
+    this.updateExecutionPanel(this.lastResult);
+    this.syncAutoTradeSignalVisibility();
+    // Restore SYSTEM ON/OFF from backend after dashboard load (independent of AUTO)
+    this.refreshSystemPowerFromServer();
     // Mobile-First patch: paint the Live Chart with whatever candles loadAll()
     // just fetched. Display-only — does not call analyze() or touch signals.
     if (window.GoldAI_Chart && typeof window.GoldAI_Chart.render === "function") {
       try { window.GoldAI_Chart.render(); } catch (_) {}
+    }
+    // Hydrate last Worker signal for display only (no analyze side-effects)
+    // MUST run before AutoSignal.start so a local analyze() does not wipe diagnostics.
+    try {
+      const ok = await this.hydrateFromWorkerLatest();
+      if (!ok && !this.lastResult) this.renderNoAnalysisYet();
+    } catch (_) {
+      if (!this.lastResult) this.renderNoAnalysisYet();
+    }
+    // Start auto monitor only after hydrate; mark worker candle as already evaluated
+    if (window.GoldAI_AutoSignal && typeof window.GoldAI_AutoSignal.start === 'function') {
+      try {
+        if (this.lastResult && this.lastResult.hydratedFromWorker && this.lastResult._workerCandleKey
+            && typeof window.GoldAI_AutoSignal.markCandleEvaluated === 'function') {
+          window.GoldAI_AutoSignal.markCandleEvaluated(this.lastResult._workerCandleKey);
+        }
+      } catch (_) {}
+      window.GoldAI_AutoSignal.start({ skipImmediateTick: !!(this.lastResult && this.lastResult.hydratedFromWorker) });
     }
     this.setupSettingsPanel();
     this.setupNotificationPermission();
@@ -32,6 +69,11 @@ window.GoldAI = {
       await this.fetchPriceFromBackend();
       this.updatePriceUI();
     }, window.GoldAI_Config.PRICE_REFRESH_MS);
+    // Auto-refresh Worker signal when SYSTEM ON (display only — no analyze())
+    this.startWorkerSignalPolling();
+    // Real account equity for the risk card (read-only), refreshed every minute
+    this.refreshAccountFromServer();
+    setInterval(() => this.refreshAccountFromServer(), 60000);
     console.log("✅ GoldAI Pro ready");
   },
 
@@ -165,6 +207,205 @@ window.GoldAI = {
     return weights;
   },
 
+
+  /**
+   * Read-only hydrate of last Worker signal into the dashboard after refresh.
+   * Does NOT run analyze side-effects (saveHistory / sendToBackend / notify / orders).
+   * Source: GET /api/worker/signal/latest (journal written by signal-worker).
+   */
+  /** Normalize symbol|TF|time so Worker journal and AutoSignal share one key. */
+  _normalizeCandleKey(symbol, tf, time) {
+    let sym = String(symbol || (window.GoldAI_Config && window.GoldAI_Config.SYMBOL) || "XAUUSD.").toUpperCase();
+    if (sym.endsWith(".")) sym = sym.slice(0, -1);
+    const tfu = String(tf || "M5").toUpperCase();
+    const ts = String(time != null ? time : "");
+    return sym + "|" + tfu + "|" + ts;
+  },
+
+  /** Seconds per bar for display close-time only (does not change candle identity). */
+  _tfBarSeconds(tf) {
+    const u = String(tf || "M5").toUpperCase();
+    return ({ M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400 })[u] || 300;
+  },
+
+  /**
+   * Display-only: candle CLOSE time from MT5 open time + TF duration.
+   * candleTimestamp / identity remain OPEN; do not use for dedup keys.
+   */
+  _signalDisplayClose(openUnixSec, tf) {
+    const open = Number(openUnixSec);
+    if (!open || isNaN(open)) return null;
+    const closeSec = open + this._tfBarSeconds(tf);
+    const d = new Date(closeSec * 1000);
+    return {
+      closeUnix: closeSec,
+      iso: d.toISOString(),
+      timeFa: d.toLocaleString("fa-IR"),
+      dateFa: d.toLocaleDateString("fa-IR"),
+      timeOnlyFa: d.toLocaleTimeString("fa-IR")
+    };
+  },
+
+  async hydrateFromWorkerLatest(opts) {
+    opts = opts || {};
+    const onlyIfNewer = !!opts.onlyIfNewer;
+    const requireSystemOn = !!opts.requireSystemOn;
+    try {
+      if (requireSystemOn) {
+        // Display policy: do not apply new Worker snapshots while SYSTEM is OFF
+        const btn = document.getElementById("systemPowerBtn");
+        const sysOn = btn && btn.getAttribute("aria-pressed") === "true";
+        if (!sysOn) return false;
+      }
+
+      const res = await fetch(`${this.backendURL}/worker/signal/latest`, { cache: "no-store" });
+      if (!res.ok) return false;
+      const entry = await res.json();
+      if (!entry || !entry.signal) return false;
+
+      // Freshness: candle close must be within max age by TF (no stale display)
+      const tf = String(entry.timeframe || "M5").toUpperCase();
+      const barSec = ({ M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400 })[tf] || 300;
+      const maxAgeMs = (barSec * 2 + 120) * 1000;
+      const candleTs = entry.candleTimestamp != null ? Number(entry.candleTimestamp) : null;
+      const candleMs = candleTs
+        ? candleTs * 1000
+        : (entry.candleTimeISO ? Date.parse(entry.candleTimeISO) : NaN);
+      if (!candleMs || isNaN(candleMs)) return false;
+      if (Date.now() - candleMs > maxAgeMs) return false;
+
+      // Poll path: only re-render when Worker closed-candle identity changes
+      if (onlyIfNewer) {
+        const prev = this._lastHydratedCandleTs;
+        if (prev != null && candleTs != null && String(prev) === String(candleTs)) {
+          return false; // same candle — keep current UI
+        }
+        // Also compare against lastResult key if set
+        if (this.lastResult && this.lastResult.candleTimestamp != null && candleTs != null
+            && String(this.lastResult.candleTimestamp) === String(candleTs)
+            && this.lastResult.hydratedFromWorker) {
+          return false;
+        }
+      }
+
+      const d = entry.diagnostics || {};
+      const result = {
+        signal: entry.signal,
+        confidence: entry.confidence,
+        directionalEdge: entry.directionalEdge != null ? entry.directionalEdge : d.directionalEdge,
+        primaryReject: entry.primaryReject || d.primaryRejectFinal || d.primaryReject || null,
+        entryQuality: entry.entryQuality || null,
+        diagnostics: d,
+        layers: entry.layers || { htf: d.layers && d.layers.htf, regime: d.layers && d.layers.regime },
+        reason: entry.reason || "",
+        warnings: entry.warnings || [],
+        entry: entry.price,
+        price: entry.price,
+        stopLoss: entry.stopLoss,
+        tp1: entry.tp1,
+        tp2: entry.tp2,
+        tp3: entry.tp3,
+        lot: entry.lot,
+        executionEligible: (typeof entry.executionEligible === "boolean") ? entry.executionEligible : null,
+        executionStatus: entry.executionStatus || null,
+        executionResponse: entry.executionResponse || null,
+        autoPlan: entry.autoPlan || null,
+        riskReward: (function () {
+          const e = Number(entry.price), s = Number(entry.stopLoss), t = Number(entry.tp1);
+          if (![e, s, t].every(Number.isFinite) || Math.abs(e - s) <= 0) return null;
+          return "1:" + (Math.abs(t - e) / Math.abs(e - s)).toFixed(2);
+        })(),
+        candleTimestamp: candleTs, // OPEN identity — unchanged for dedup/keys
+        candleTimeISO: entry.candleTimeISO || null, // OPEN ISO from Worker
+        // Display times = CLOSE (open + TF seconds); not wall-clock, not open
+        timestamp: (function () {
+          const disp = this._signalDisplayClose(candleTs, tf);
+          return disp ? disp.iso : (entry.timestamp || entry.candleTimeISO || null);
+        }).call(this),
+        time: (function () {
+          const disp = this._signalDisplayClose(candleTs, tf);
+          return disp ? disp.timeFa : (entry.timestamp || entry.candleTimeISO || null);
+        }).call(this),
+        signalDisplayCloseISO: (function () {
+          const disp = this._signalDisplayClose(candleTs, tf);
+          return disp ? disp.iso : null;
+        }).call(this),
+        tf: tf,
+        hydratedFromWorker: true,
+        source: "worker-journal",
+        _workerCandleKey: this._normalizeCandleKey(entry.symbol, tf, entry.candleTimestamp)
+      };
+
+      this.lastResult = result;
+      this._lastHydratedCandleTs = candleTs;
+      try { window.GoldAI_V1_Result = result; } catch (_) {}
+      this.render(result);
+      // Keep AutoSignal dedup key aligned with displayed Worker candle
+      try {
+        if (result._workerCandleKey && window.GoldAI_AutoSignal
+            && typeof window.GoldAI_AutoSignal.markCandleEvaluated === "function") {
+          window.GoldAI_AutoSignal.markCandleEvaluated(result._workerCandleKey);
+        }
+      } catch (_) {}
+      return true;
+    } catch (e) {
+      console.warn("hydrateFromWorkerLatest failed:", e && e.message);
+      return false;
+    }
+  },
+
+  /**
+   * Poll Worker latest and render when candleTimestamp changes.
+   * SYSTEM OFF still shows signals (orders remain blocked server-side).
+   * Never calls analyze(). Single interval, no concurrent fetches.
+   */
+  startWorkerSignalPolling() {
+    if (this._workerPollTimer) return; // prevent duplicate intervals
+    const intervalMs = 5000; // UI pickup ≤5s after Worker writes; Worker itself ≤15s post-close
+    this._workerPollTimer = setInterval(() => {
+      this.pollWorkerSignalLatest();
+    }, intervalMs);
+  },
+
+  stopWorkerSignalPolling() {
+    if (this._workerPollTimer) {
+      clearInterval(this._workerPollTimer);
+      this._workerPollTimer = null;
+    }
+  },
+
+  async pollWorkerSignalLatest() {
+    if (this._workerPollBusy) return;
+    this._workerPollBusy = true;
+    try {
+      await this.hydrateFromWorkerLatest({ onlyIfNewer: true });
+    } catch (e) {
+      try { console.warn("worker poll failed:", e && e.message); } catch (_) {}
+    } finally {
+      this._workerPollBusy = false;
+    }
+  },
+
+  /** Empty / pre-analysis UI — avoid implying conf=0 is a real engine result */
+  renderNoAnalysisYet() {
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    set("signal", "NO ANALYSIS");
+    set("confidence", "—");
+    set("signalStrengthText", "—");
+    set("signalStrengthPercentText", "—");
+    set("semEdge", "—");
+    set("semQuality", "—");
+    set("semPermission", "—");
+    set("semReject", "—");
+    set("semHtf", "—");
+    set("semSeed", "—");
+    set("semRegime", "—");
+    const tag = document.getElementById("signalStrengthTag");
+    if (tag) { tag.className = "strength-tag weak"; tag.textContent = "Waiting"; }
+    const ar = document.getElementById("aiReason");
+    if (ar) ar.textContent = "Waiting for live signal — open Analyze or wait for Worker hydrate";
+  },
+
   async analyze() {
     const btn = document.getElementById("analyzeBtn");
     const status = document.getElementById("aiStatus");
@@ -232,99 +473,185 @@ window.GoldAI = {
         if (!isNaN(parsed) && parsed > 0) price = parsed;
       }
 
-      const htfCloses = data.closes[biasTF];
-      const htfHighs = data.highs[biasTF];
-      const htfLows = data.lows[biasTF];
+      // ========== ONE SIGNAL TRUTH: canonical buildSignal (same as Worker/Backtest) ==========
+      // Decision path: closed entry bars → deterministic HTF resample → buildSignal
+      // AI / Reversal are DISPLAY-ONLY (computed after decision; never mutate final).
+      const BT = window.GoldAI_Backtest;
+      if (!BT || typeof BT.buildSignal !== "function") {
+        throw new Error("GoldAI_Backtest.buildSignal missing — cannot produce canonical signal");
+      }
+      const TF_SECONDS = BT.TF_SECONDS || { M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400 };
+      const entryKey = String(entryTF).toUpperCase();
+      const barSeconds = TF_SECONDS[entryKey] || TF_SECONDS.M5 || 300;
+
+      // Build entry bars from closed series (prefer candle objects with time when available)
+      const n = closes.length;
+      const entryBars = [];
+      for (let i = 0; i < n; i++) {
+        const c = candles && candles[i] ? candles[i] : null;
+        const t = (c && (c.time || c.timestamp))
+          ? Number(c.time || c.timestamp)
+          : (Math.floor(Date.now() / 1000) - (n - 1 - i) * barSeconds);
+        entryBars.push({
+          time: t,
+          open: c && c.open != null ? Number(c.open) : Number(closes[i]),
+          high: c && c.high != null ? Number(c.high) : Number(highs[i]),
+          low: c && c.low != null ? Number(c.low) : Number(lows[i]),
+          close: Number(closes[i]),
+          volume: (vols && vols[i] != null) ? Number(vols[i]) : (c && (c.volume || c.tick_volume) || 0)
+        });
+      }
+
+      const mode = isIntraday ? "scalp" : "swing";
+      const htfBucketSeconds = mode === "swing" ? (TF_SECONDS.H4 || 14400) : (TF_SECONDS.H1 || 3600);
+      const htfBars = BT.resample(entryBars, barSeconds, htfBucketSeconds);
+      const entrySeries = BT.seriesOf(entryBars);
+      const htfSeries = BT.seriesOf(htfBars);
+
+      // Micro: same policy as worker (M1 series when scalp; else entry)
+      let microSeries = entrySeries;
       const m1Closes = data.closes[scalpTF] || [];
-
-      const ema = window.GoldAI_EMA.analyzeEMA(closes, price, cfg);
-      const rsi = window.GoldAI_RSI.analyzeRSI(closes, cfg);
-      const div = window.GoldAI_Divergence.analyzeDivergence(closes, rsi.history || []);
-      const structure = window.GoldAI_MarketStructure.analyzeMarketStructure(highs, lows, closes, cfg);
-      const macd = window.GoldAI_MACD.analyzeMACD(closes);
-      const adx = window.GoldAI_ADX.analyzeADX(highs, lows, closes, cfg.ADX_PERIOD || 14);
-      const atrL = window.GoldAI_ATR.analyzeATR(highs, lows, closes, cfg);
-      if (atrL && atrL.atr) window.GoldAI_LastATR = atrL.atr; // used by updateRiskUI() to project a risk-based lot before a plan exists
-      const volume = window.GoldAI_Volume.analyzeVolume(vols, closes);
-      const sr = window.GoldAI_SR.analyzeSR(highs, lows, price, cfg);
-      const candleP = window.GoldAI_Candles.analyzeCandles(candles);
-      const liq = window.GoldAI_Liquidity.analyzeLiquidity(highs, lows, closes);
-      const reversal = this.detectReversal(closes, rsi.history || []);
-
-      const htfEma = window.GoldAI_EMA.analyzeEMA(htfCloses, htfCloses[htfCloses.length - 1], cfg);
-      const htfStr = window.GoldAI_MarketStructure.analyzeMarketStructure(htfHighs, htfLows, htfCloses, cfg);
-      const htf = { trend: htfStr.trend !== "UNKNOWN" ? htfStr.trend : htfEma.trend, strength: htfEma.confidence > 70 ? "STRONG" : "WEAK" };
-
-      let m1 = null;
-      if (m1Closes.length > 5) {
-        const m1Ema = window.GoldAI_EMA.analyzeEMA(m1Closes, m1Closes[m1Closes.length - 1], cfg);
-        m1 = { microstructure: m1Ema.trend };
-      }
-
-      const fundamental = window.GoldAI_Fundamental.analyzeFundamentals(cfg);
-      const correlation = window.GoldAI_Correlation.analyzeCorrelation(closes, price);
-      const dynamicWeights = this.updateDynamicWeights();
-
-      const layers = {
-        ema, rsi, divergence: div, structure, macd, adx,
-        atr: atrL, volume, sr, candles: candleP, liquidity: liq,
-        htf, m1, fundamental, correlation, reversal, dynamicWeights
-      };
-
-      const aiBrain = window.GoldAI_AIBrain.analyze(layers);
-      layers.aiBrain = aiBrain;
-
-      const raw = window.GoldAI_Score.runScoreEngine(layers);
-      let final = window.GoldAI_Conflict.runConflictFilter(raw, layers, cfg);
-
-      const dModeEarly = (data.dataMode || "demo").toLowerCase();
-      if (dModeEarly !== "demo" && reversal.signal !== 'NONE' && reversal.strength > 60) {
-        if (reversal.signal === 'BUY' && final.signal && final.signal.includes('WAIT')) {
-          final.signal = 'BUY (Reversal)';
-          final.confidence = Math.min(85, final.confidence + 15);
-          final.reason = (final.reason || '') + ' | 🔄 Reversal: ' + reversal.type;
+      const m1Candles = data.candles[scalpTF] || [];
+      if (mode === "scalp" && m1Closes.length > 5) {
+        const m1Bars = [];
+        for (let i = 0; i < m1Closes.length; i++) {
+          const c = m1Candles[i] || null;
+          const t = (c && (c.time || c.timestamp))
+            ? Number(c.time || c.timestamp)
+            : (Math.floor(Date.now() / 1000) - (m1Closes.length - 1 - i) * 60);
+          m1Bars.push({
+            time: t,
+            open: c && c.open != null ? Number(c.open) : Number(m1Closes[i]),
+            high: c && c.high != null ? Number(c.high) : Number(m1Closes[i]),
+            low: c && c.low != null ? Number(c.low) : Number(m1Closes[i]),
+            close: Number(m1Closes[i]),
+            volume: (c && (c.volume || c.tick_volume)) || 0
+          });
         }
-        if (reversal.signal === 'SELL' && final.signal && final.signal.includes('WAIT')) {
-          final.signal = 'SELL (Reversal)';
-          final.confidence = Math.min(85, final.confidence + 15);
-          final.reason = (final.reason || '') + ' | 🔄 Reversal: ' + reversal.type;
-        }
+        microSeries = BT.seriesOf(m1Bars);
       }
 
-      if (dModeEarly === "demo" && final.signal && !final.signal.includes("WAIT")) {
-        final.signal = "WAIT 🟡";
-        final.confidence = Math.min(final.confidence || 0, 35);
-        final.warnings = (final.warnings || []).concat(["DEMO data → forced WAIT"]);
+      // Align GoldAI_Data.dataMode with permission layer (no extra frontend decision mutation)
+      if (window.GoldAI_Data) {
+        window.GoldAI_Data.dataMode = (data.dataMode || "demo").toLowerCase();
       }
+
+      const built = BT.buildSignal(
+        {
+          closes: entrySeries.closes,
+          highs: entrySeries.highs,
+          lows: entrySeries.lows,
+          volumes: entrySeries.volumes,
+          candles: entrySeries.candles
+        },
+        {
+          closes: htfSeries.closes,
+          highs: htfSeries.highs,
+          lows: htfSeries.lows
+        },
+        { closes: microSeries.closes },
+        cfg,
+        price
+      );
+
+      let final = built.final;
+      const atrVal = built.atr;
+      const structure = built.structure;
+      const layers = built.layers || {};
+      if (atrVal) window.GoldAI_LastATR = atrVal;
+
+      // DISPLAY-ONLY metadata (must not mutate final.signal / confidence / permission)
+      let reversalMeta = { signal: "NONE", strength: 0, type: "" };
+      try {
+        const rsiHist = layers.rsi && layers.rsi.history ? layers.rsi.history : [];
+        reversalMeta = this.detectReversal(closes, rsiHist) || reversalMeta;
+      } catch (_) {}
+      let aiMeta = null;
+      try {
+        if (window.GoldAI_AIBrain && typeof window.GoldAI_AIBrain.analyze === "function") {
+          // Pass a copy so AI cannot attach itself into decision layers
+          const displayLayers = Object.assign({}, layers);
+          aiMeta = window.GoldAI_AIBrain.analyze(displayLayers);
+        }
+      } catch (_) {}
+      try {
+        if (window.GoldAI_Fundamental) {
+          layers.displayFundamental = window.GoldAI_Fundamental.analyzeFundamentals(cfg);
+        }
+        if (window.GoldAI_Correlation) {
+          layers.displayCorrelation = window.GoldAI_Correlation.analyzeCorrelation(closes, price);
+        }
+      } catch (_) {}
 
       const userLot = cfg.USER_LOT || 0;
       const plan = window.GoldAI_Trade.createTradePlan(
-        final.signal, price, atrL.atr, data.getCapital(),
-        cfg.DEFAULT_RISK_PERCENT, cfg, cfg.SYMBOL_SPECS
+        final.signal, price, atrVal, data.getCapital(),
+        cfg.DEFAULT_RISK_PERCENT, cfg, cfg.SYMBOL_SPECS, structure
       );
       if (userLot > 0) plan.lot = userLot;
 
       const now = new Date();
       const result = {
         ...final, ...plan, price, layers,
-        time: now.toLocaleString("fa-IR"),
-        timestamp: now.toISOString(),
+        // Explicit semantic fields (plan must not wipe diagnostics from final)
+        directionalEdge: final.directionalEdge != null ? final.directionalEdge
+          : (final.diagnostics && final.diagnostics.directionalEdge),
+        primaryReject: final.primaryReject || (final.diagnostics && (final.diagnostics.primaryRejectFinal || final.diagnostics.primaryReject)) || null,
+        diagnostics: final.diagnostics || null,
+        entryQuality: final.entryQuality,
+        // Display signal time = last closed candle CLOSE (open+TF), not wall-clock
+        time: (function () {
+          let openSec = null;
+          try {
+            if (typeof entryBars !== "undefined" && entryBars && entryBars.length) {
+              openSec = Number(entryBars[entryBars.length - 1].time);
+            } else if (candles && candles.length && candles[candles.length - 1].time) {
+              openSec = Number(candles[candles.length - 1].time);
+            }
+          } catch (_) {}
+          const disp = openSec ? this._signalDisplayClose(openSec, entryTF) : null;
+          return disp ? disp.timeFa : now.toLocaleString("fa-IR");
+        }).call(this),
+        timestamp: (function () {
+          let openSec = null;
+          try {
+            if (typeof entryBars !== "undefined" && entryBars && entryBars.length) {
+              openSec = Number(entryBars[entryBars.length - 1].time);
+            } else if (candles && candles.length && candles[candles.length - 1].time) {
+              openSec = Number(candles[candles.length - 1].time);
+            }
+          } catch (_) {}
+          const disp = openSec ? this._signalDisplayClose(openSec, entryTF) : null;
+          return disp ? disp.iso : now.toISOString();
+        }).call(this),
+        candleTimestamp: (function () {
+          try {
+            if (typeof entryBars !== "undefined" && entryBars && entryBars.length) {
+              return Number(entryBars[entryBars.length - 1].time);
+            }
+            if (candles && candles.length && candles[candles.length - 1].time) {
+              return Number(candles[candles.length - 1].time);
+            }
+          } catch (_) {}
+          return null;
+        })(),
         tf: entryTF.toUpperCase(),
-        reversal: reversal.signal
+        // Display-only fields — do not use for trading decisions
+        reversal: reversalMeta.signal,
+        reversalMeta: reversalMeta,
+        aiMeta: aiMeta,
+        htfSource: "resample:entry→" + (mode === "swing" ? "H4" : "H1"),
+        canonicalPath: "GoldAI_Backtest.buildSignal"
       };
 
       result.warnings = result.warnings || [];
-      if (!open && result.signal && !result.signal.includes('WAIT')) {
+      if (!open && result.signal && !result.signal.includes("WAIT")) {
         result.warnings.push("⛔ بازار بسته است - این سیگنال فقط جنبه آموزشی دارد");
       }
       const dMode = (data.dataMode || "demo").toLowerCase();
       if (dMode === "demo") {
         result.warnings.push("⚠️ داده Demo (ساختگی) — سیگنال قابل معامله نیست");
-        if (result.signal && !result.signal.includes("WAIT")) {
-          result.signal = "WAIT 🟡";
-          result.confidence = Math.min(result.confidence || 0, 40);
-          result.reason = (result.reason || "") + " | Demo data → forced WAIT";
-        }
+        // Permission already enforces DATA_MODE WAIT when STRICT_DATA_MODE; UI warning only here
       } else if (dMode === "mixed") {
         result.warnings.push("⚠️ داده Mixed (قیمت زنده + کندل ساختگی) — با احتیاط استفاده شود");
       }
@@ -351,6 +678,109 @@ window.GoldAI = {
     }
   },
 
+
+  /** Map engine reject codes to short UI labels (display only — does not change gates). */
+  semanticRejectLabel(code) {
+    const c = String(code || "").toUpperCase();
+    const map = {
+      LOW_CONFIDENCE: "Permission: quality conf below floor (not weak edge)",
+      LOW_EDGE: "Directional edge too weak",
+      HTF_WEAK: "Quality: HTF context weak",
+      HTF_AGAINST: "Quality: against HTF trend",
+      REGIME_RANGE: "Quality: range regime block",
+      RISK_GUARD: "Permission: risk guard",
+      DATA_MODE: "Permission: data mode",
+      DATA_DEMO: "Permission: demo data",
+      DATA_OFFLINE: "Permission: offline",
+      SIGNAL_DEDUP: "Permission: signal dedup cooldown",
+      SCORE_NO_EDGE: "Score: no directional edge"
+    };
+    return map[c] || (c ? c : "—");
+  },
+
+  /** Display-only Persian translation of engine messages (engine text itself is unchanged). */
+  faMessage(msg) {
+    const s = String(msg == null ? "" : msg);
+    const rules = [
+      [/^Against HTF trend — entry blocked$/, "خلاف روند تایم بالاتر — ورود مسدود شد"],
+      [/^SELL into extreme OS RSI$/, "فروش در منطقه‌ی فروش شدید (RSI خیلی پایین) — اطمینان کم شد"],
+      [/^BUY into extreme OB RSI$/, "خرید در منطقه‌ی خرید شدید (RSI خیلی بالا) — اطمینان کم شد"],
+      [/^HTF weak\/unknown — confidence reduced \(not blocked\)$/, "روند تایم بالاتر ضعیف یا نامشخص — اطمینان کم شد"],
+      [/^Range regime — entry blocked on scalp TF without strong BOS$/, "بازار رنج است — ورود اسکلپ بدون شکست قوی مسدود شد"],
+      [/^Range regime — reduced confidence$/, "بازار رنج است — اطمینان کم شد"],
+      [/^Range break with strong BOS$/, "شکست قوی از محدوده‌ی رنج"],
+      [/^Weak BOS — structure quality reduced \(soft\)$/, "شکست ساختار ضعیف — اطمینان کم شد"],
+      [/^No clear directional edge$/, "جهت مشخصی وجود ندارد"],
+      [/^Conflicting \/ weak edge$/, "نشانه‌ها متضاد یا ضعیف‌اند"],
+      [/^Signal cooldown \((\d+) candles same direction\) — order blocked, direction unchanged$/, "سیگنال هم‌جهت تکراری (فاصله‌ی $1 کندل) — سفارش ارسال نشد"],
+      [/^Signal cooldown \((\d+)m same direction\) — order blocked, direction unchanged$/, "سیگنال هم‌جهت تکراری ($1 دقیقه) — سفارش ارسال نشد"],
+      [/^Same-direction idea still open \(SL\/TP not hit\) — first signal of the move only$/, "ایده‌ی هم‌جهت قبلی هنوز باز است — سفارش ارسال نشد"],
+      [/^Confidence (\d+) < (\d+)$/, "اطمینان $1 کمتر از حداقل $2 است"],
+      [/^BUY vs EMA bearish$/, "خرید خلاف روند نزولی میانگین‌ها"],
+      [/^SELL vs EMA bullish$/, "فروش خلاف روند صعودی میانگین‌ها"],
+      [/^BUY vs bearish structure$/, "خرید خلاف ساختار نزولی"],
+      [/^SELL vs bullish structure$/, "فروش خلاف ساختار صعودی"],
+      [/^CHoCH — regime shift$/, "تغییر ساختار بازار (CHoCH)"],
+      [/^EMA confirms BUY$/, "میانگین‌ها خرید را تأیید می‌کنند"],
+      [/^EMA confirms SELL$/, "میانگین‌ها فروش را تأیید می‌کنند"],
+      [/^BOS active$/, "شکست ساختار فعال است"],
+      [/^HTF strength confirms$/, "روند تایم بالاتر تأیید می‌کند"],
+      [/^Price ([\d.]+) ATR from EMA20 — late entry \(-(\d+)\)$/, "قیمت $1 برابر نوسان از میانگین ۲۰ دور است — ورود دیر (اطمینان −$2)"],
+      [/^MT5 OFFLINE → forced WAIT \(price is not live\)$/, "متاتریدر قطع است — صبر اجباری"],
+      [/^DEMO data → forced WAIT \(not tradable\)$/, "داده‌ی نمایشی — صبر اجباری"],
+      [/^MIXED data \(live price \+ synthetic candles\) — reduced confidence$/, "داده‌ی ترکیبی — اطمینان کم شد"],
+      [/^Risk Guard: (.*)$/, "محافظ ریسک: $1"]
+    ];
+    for (const [re, fa] of rules) { if (re.test(s)) return s.replace(re, fa); }
+    return s;
+  },
+
+  /** Shows what actually happened with the latest worker signal (display only). */
+  renderExecutionStatus(r) {
+    const el = document.getElementById("signalExecStatus");
+    if (!el) return;
+    const st = r && r.executionStatus ? String(r.executionStatus) : "";
+    const sig = r && r.signal ? String(r.signal) : "";
+    const isWait = !sig || sig.includes("WAIT");
+    const rej = r && r.primaryReject ? String(r.primaryReject) : "";
+    const rejFa = {
+      HTF_AGAINST: "خلاف روند تایم بالاتر", REGIME_RANGE: "بازار رنج است", LOW_EDGE: "جهت مشخصی وجود ندارد",
+      LOW_CONFIDENCE: "اطمینان کمتر از حداقل", SIGNAL_DEDUP: "سیگنال هم‌جهت تکراری (فاصله‌ی چند کندل)",
+      SIGNAL_CLUSTER: "سیگنال هم‌جهت تکراری", RISK_GUARD: "محافظ ریسک", DATA_MODE: "داده زنده نیست"
+    };
+    const map = {
+      EXECUTED: ["✅ معامله در متاتریدر اجرا شد", "ok"],
+      SKIPPED_SYSTEM_OFF: ["سیستم خاموش است — سفارشی ارسال نشد", "off"],
+      SKIPPED_MODE_NOT_AUTO: ["حالت دستی است — سفارش خودکار ارسال نمی‌شود", "off"],
+      SKIPPED_AUTO_TRADING_OFF: ["ارسال خودکار سفارش خاموش است", "off"],
+      SKIPPED_CONFIDENCE_LOW: ["اجرا نشد: اطمینان کمتر از حداقل تنظیم‌شده", "blocked"],
+      SKIPPED_RR_BELOW_MIN: ["اجرا نشد: نسبت سود به ضرر کمتر از ۱ به ۱ بود", "blocked"],
+      SKIPPED_NO_LIVE_PRICE: ["اجرا نشد: قیمت لحظه‌ای در دسترس نبود", "blocked"],
+      SKIPPED_NO_PLAN: ["اجرا نشد: محاسبه‌ی حد ضرر و حد سود ممکن نبود", "blocked"],
+      RISK_BLOCKED: ["اجرا نشد: سقف ضرر روزانه پر شده است", "blocked"],
+      STALE_CANDLE_REJECTED: ["اجرا نشد: کندل قبل از روشن شدن سیستم بسته شده بود", "blocked"],
+      AUTH_FAILED: ["اجرا نشد: رمز دسترسی ورکر پذیرفته نشد", "blocked"],
+      REJECTED_DUPLICATE: ["برای این کندل قبلاً سفارش ثبت شده است", "off"],
+      CONFIDENCE_LOW: ["اجرا نشد: اطمینان کمتر از حداقل سرور", "blocked"],
+      MODE_NOT_AUTO: ["سرور در حالت دستی است — سفارش ارسال نشد", "off"],
+      AUTO_TRADING_OFF: ["ارسال خودکار در سرور خاموش است", "off"],
+      SYSTEM_OFF: ["سیستم در سرور خاموش است", "off"]
+    };
+    let text = "", cls = "off";
+    if (!st) {
+      text = ""; // older records have no status
+    } else if (st === "SKIPPED_WAIT_OR_INVALID") {
+      if (isWait) { text = "صبر" + (rejFa[rej] ? " — " + rejFa[rej] : ""); cls = "off"; }
+      else { text = "اجرا نشد" + (rejFa[rej] ? ": " + rejFa[rej] : ""); cls = "blocked"; }
+    } else if (map[st]) {
+      text = map[st][0]; cls = map[st][1];
+    } else {
+      text = "وضعیت اجرا: " + st; cls = "blocked";
+    }
+    el.textContent = text;
+    el.className = "signal-exec-status" + (text ? " " + cls : " hidden");
+  },
+
   render(r) {
     const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
     const decs = this.getDecimals();
@@ -362,8 +792,7 @@ window.GoldAI = {
 
     const tpCount = window.GoldAI_Config.TP_COUNT || 3;
     let detailsHtml = `<div class="detail-item"><span>ورود</span><b>${fmt(r.entry)}</b></div><div class="detail-item"><span>SL</span><b>${fmt(r.stopLoss)}</b></div><div class="detail-item"><span>TP1</span><b>${fmt(r.tp1)}</b></div>`;
-    if (tpCount >= 2) detailsHtml += `<div class="detail-item"><span>TP2</span><b>${fmt(r.tp2)}</b></div>`;
-    if (tpCount >= 3) detailsHtml += `<div class="detail-item"><span>TP3</span><b>${fmt(r.tp3)}</b></div>`;
+    // 2026-10-07: TP2/TP3 are manual-only — shown in Settings (gear), not on the dashboard card.
     detailsHtml += `<div class="detail-item"><span>R:R</span><b>${r.riskReward || "—"}</b></div>`;
     const sd = document.getElementById('signalDetails');
     if (sd) sd.innerHTML = detailsHtml;
@@ -372,28 +801,52 @@ window.GoldAI = {
     const isSell = !!(r.signal && r.signal.includes("SELL"));
     const strength = Math.min(100, Math.max(0, r.confidence || 0));
 
-    // Circular gauge (قدرت سیگنال)
+    // Semicircular gauge (قدرت سیگنال). UI-presentation change only: was a
+    // full-circle SVG <circle>, now a half-circle SVG <path> (radius 50) per
+    // the reference design. strength/color/glow logic below is unchanged —
+    // only the dash-length constant changes, from a full circumference
+    // (2·π·r) to a half circumference (π·r), matching the new arc's length.
     const gaugeFill = document.getElementById("signalGaugeFill");
     const gaugeText = document.getElementById("signalStrengthText");
     if (gaugeFill) {
-      const circumference = 2 * Math.PI * 52;
-      gaugeFill.style.strokeDasharray = circumference;
-      gaugeFill.style.strokeDashoffset = circumference * (1 - strength / 100);
+      const halfCircumference = Math.PI * 50; // radius 50 arc — unchanged geometry
+      gaugeFill.style.strokeDasharray = halfCircumference;
+      gaugeFill.style.strokeDashoffset = halfCircumference * (1 - strength / 100);
       const gaugeColor = strength >= 75 ? (isBuy ? "var(--green)" : isSell ? "var(--red)" : "var(--gold-soft)") : strength >= 55 ? "var(--yellow)" : "var(--text-faint)";
       gaugeFill.style.stroke = gaugeColor;
       // Subtle glow only for a strong, actionable signal — kept small so it reads as premium, not neon.
-      gaugeFill.style.filter = (strength >= 75 && (isBuy || isSell)) ? `drop-shadow(0 0 4px ${gaugeColor})` : "none";
+      gaugeFill.style.filter = (strength >= 75 && (isBuy || isSell)) ? `drop-shadow(0 0 6px ${gaugeColor})` : "none";
+      // Tip indicator at arc end (presentation only; center 70,72 matches SVG viewBox)
+      const tip = document.getElementById("signalGaugeTip");
+      if (tip) {
+        const t = Math.max(0, Math.min(1, strength / 100));
+        const angle = Math.PI * (1 - t); // PI → 0 left-to-right along upper semicircle
+        tip.setAttribute("cx", String(70 + 50 * Math.cos(angle)));
+        tip.setAttribute("cy", String(72 - 50 * Math.sin(angle)));
+        tip.setAttribute("opacity", t > 0.02 ? "1" : "0");
+        tip.style.fill = gaugeColor;
+        tip.style.filter = (strength >= 75 && (isBuy || isSell)) ? `drop-shadow(0 0 3px ${gaugeColor})` : "none";
+      }
     }
     if (gaugeText) gaugeText.textContent = strength + "%";
     const strengthPctText = document.getElementById("signalStrengthPercentText");
     if (strengthPctText) strengthPctText.textContent = strength + "%";
 
-    // Strength tag (ضعیف / متوسط / قوی)
+    // Setup-quality tag (NOT "directional edge strength")
     const tagEl = document.getElementById("signalStrengthTag");
     if (tagEl) {
+      const edgeN = Number(r.directionalEdge != null ? r.directionalEdge : (r.diagnostics && r.diagnostics.directionalEdge));
+      const highEdge = !isNaN(edgeN) && edgeN >= 9;
       if (!isBuy && !isSell) {
         tagEl.className = "strength-tag weak";
-        tagEl.textContent = "—";
+        // Distinguish blocked/waiting from weak direction
+        if (highEdge && r.primaryReject) {
+          tagEl.textContent = "Blocked";
+        } else if (highEdge) {
+          tagEl.textContent = "Context";
+        } else {
+          tagEl.textContent = "—";
+        }
       } else if (strength >= 75) {
         tagEl.className = "strength-tag strong" + (isBuy ? " buy-tag" : "");
         tagEl.textContent = "قوی";
@@ -402,7 +855,77 @@ window.GoldAI = {
         tagEl.textContent = "متوسط";
       } else {
         tagEl.className = "strength-tag weak";
-        tagEl.textContent = "ضعیف";
+        tagEl.textContent = highEdge ? "Quality" : "ضعیف";
+      }
+    }
+
+    // Semantic panel: Edge / Quality / Permission / HTF / Reject (display-only)
+    // Parentheses required: (a) || (b) — avoid a || b && c precedence bugs.
+    {
+      const setSem = (id, v) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = (v == null || v === "") ? "—" : String(v);
+      };
+      try {
+        const d = (r && r.diagnostics) ? r.diagnostics : {};
+        const dLayers = (d && d.layers) ? d.layers : {};
+        const rLayers = (r && r.layers) ? r.layers : {};
+        let edgeVal = null;
+        if (r && r.directionalEdge != null && r.directionalEdge !== "") edgeVal = r.directionalEdge;
+        else if (d.directionalEdge != null && d.directionalEdge !== "") edgeVal = d.directionalEdge;
+        const seedVal = (d.confidenceSeed != null) ? d.confidenceSeed : null;
+        let qualVal = null;
+        if (d.confidenceAfterQuality != null) qualVal = d.confidenceAfterQuality;
+        else if (d.confidenceFinal != null) qualVal = d.confidenceFinal;
+        else if (r && r.confidence != null) qualVal = r.confidence;
+        const rej = (r && r.primaryReject) || d.primaryRejectFinal || d.primaryReject || null;
+        const htf = (rLayers.htf) || (dLayers.htf) || null;
+        let htfAlign = "";
+        if (htf && window.GoldAI_HtfContext && typeof window.GoldAI_HtfContext.htfAlignmentState === "function" && r && r.signal) {
+          try { htfAlign = window.GoldAI_HtfContext.htfAlignmentState(htf, r.signal) || ""; } catch (_) { htfAlign = ""; }
+        }
+        const htfStr = htf
+          ? (String(htf.trend || "—") + " / " + String(htf.strength || "—") + (htfAlign ? (" · align " + htfAlign) : ""))
+          : "—";
+        const regime = rLayers.regime
+          || (rLayers.marketRegime && rLayers.marketRegime.regime)
+          || dLayers.regime
+          || "—";
+        // Trade Permission must NOT be inferred from BUY/SELL alone.
+        // Prefer canonical executionEligible from Worker/result when present.
+        let perm = "UNKNOWN";
+        if (r && typeof r.executionEligible === "boolean") {
+          perm = r.executionEligible ? "ALLOWED" : "BLOCKED";
+        } else if (r && r.executionStatus != null && String(r.executionStatus).toUpperCase() === "NOT_EXECUTED"
+                   && r.hydratedFromWorker) {
+          // Worker journal always sets executionEligible; if missing status only, stay UNKNOWN
+          perm = "UNKNOWN";
+        } else if (rej) {
+          // Reject reason exists but no explicit eligibility flag → show blocked context without inventing ALLOWED
+          perm = "BLOCKED";
+        } else {
+          perm = "UNKNOWN";
+        }
+        const edgeText = (edgeVal != null && edgeVal !== "" && !isNaN(Number(edgeVal))) ? Number(edgeVal).toFixed(1) : "—";
+        const qualityText = (qualVal != null && !isNaN(Number(qualVal))) ? (Number(qualVal) + "%") : "—";
+        const seedText = (seedVal != null && !isNaN(Number(seedVal))) ? (Number(seedVal) + "%") : "—";
+        const rejectText = this.semanticRejectLabel(rej);
+        setSem("edgeValue", edgeText);
+        setSem("semEdge", edgeText);
+        setSem("qualityValue", qualityText);
+        setSem("semQuality", qualityText);
+        setSem("permissionValue", perm);
+        setSem("semPermission", perm);
+        setSem("rejectValue", rejectText);
+        setSem("semReject", rejectText);
+        setSem("htfValue", htfStr);
+        setSem("semHtf", htfStr);
+        setSem("seedValue", seedText);
+        setSem("semSeed", seedText);
+        setSem("regimeValue", regime);
+        setSem("semRegime", regime);
+      } catch (err) {
+        try { console.warn("semantic panel render failed", err); } catch (_) {}
       }
     }
 
@@ -412,11 +935,12 @@ window.GoldAI = {
     if (iconEl) iconEl.className = "signal-icon-circle" + (isBuy ? " buy" : isSell ? " sell" : " wait");
     if (arrowEl) arrowEl.textContent = isBuy ? "↑" : isSell ? "↓" : "•";
 
-    // Meta row: timeframe / date / time
-    const dt = r.timestamp ? new Date(r.timestamp) : new Date();
+    // Meta row: timeframe / date / time — prefer candle CLOSE display fields
+    const dtSrc = r.signalDisplayCloseISO || r.timestamp;
+    const dt = dtSrc ? new Date(dtSrc) : new Date();
     set("signalMetaTF", "⏱ " + (r.tf || "—"));
-    set("signalMetaDate", "📅 " + dt.toLocaleDateString("fa-IR"));
-    set("signalMetaTime", "🕒 " + dt.toLocaleTimeString("fa-IR"));
+    set("signalMetaDate", "📅 " + (isNaN(dt.getTime()) ? "—" : dt.toLocaleDateString("fa-IR")));
+    set("signalMetaTime", "🕒 " + (isNaN(dt.getTime()) ? "—" : dt.toLocaleTimeString("fa-IR")));
 
     // Active/inactive status badge
     const statusEl = document.getElementById("signalActiveStatus");
@@ -465,9 +989,30 @@ window.GoldAI = {
     const reasonEl = document.getElementById("dAiReasoning");
     if (reasonEl) reasonEl.textContent = AI.reasoning || "منتظر تحلیل...";
 
+    // Dashboard indicator-tile mirrors — display duplication only, reading the
+    // same already-computed layer values as the Analysis panel above (no new
+    // indicators, no changed scoring/thresholds).
+    const trendLabel = { BULLISH: "صعودی", BEARISH: "نزولی", NEUTRAL: "خنثی", VOLATILE: "پرنوسان", RANGE: "رنج" };
+    set("dashEmaTrend", trendLabel[L.ema?.trend] || L.ema?.trend || "—");
+    set("dashRsiValue", L.rsi?.rsi != null ? Number(L.rsi.rsi).toFixed(1) : "—");
+    const rsiZoneLabel = { EXTREME_OS: "فروش شدید (زیر ۲۰)", OVERSOLD: "فروش زیاد (زیر ۳۰)", EXTREME_OB: "خرید شدید (بالای ۸۰)",
+      OVERBOUGHT: "خرید زیاد (بالای ۷۰)", BULL_MOM: "حرکت صعودی", BEAR_MOM: "حرکت نزولی", NEUTRAL: "خنثی" };
+    set("dashRsiZone", L.rsi?.zone ? (rsiZoneLabel[L.rsi.zone] || L.rsi.zone) : "—");
+    set("dashAtrValue", L.atr?.atr != null ? Number(L.atr.atr).toFixed(2) : "—");
+    const volLabel = { LOW: "کم", MEDIUM: "متوسط", HIGH: "زیاد" };
+    set("dashAtrZone", "شدت نوسان: " + (volLabel[L.atr?.volatility] || L.atr?.volatility || "—"));
+    const structTrendLabel = { BULLISH: "روند صعودی", BEARISH: "روند نزولی", VOLATILE: "پرنوسان", RANGE: "رنج", UNKNOWN: "نامشخص" };
+    set("dashStructValue", structTrendLabel[L.structure?.trend] || L.structure?.trend || "—");
+    const hasConflictWarning = (r.warnings || []).some(w => /vs EMA|vs bearish|vs bullish|vs structure|opposite|HTF trend|CHoCH/i.test(String(w)));
+    set("dashConflictValue", hasConflictWarning ? "تضاد دارد" : "بدون تضاد");
+    this.renderExecutionStatus(r);
+    // Read-only mirror of the exact same r.lot the execution panel's #execLot
+    // uses (see updateExecutionPanel) — not a second computation.
+    set("dashSuggestedLot", r.lot != null && r.lot !== "" ? r.lot : "—");
+
     const warnBox = document.getElementById("warnings");
-    const cText = (r.confirms || []).map(x => `✅ ${x}`).join("<br>");
-    const wText = (r.warnings || []).map(x => `⚠️ ${x}`).join("<br>");
+    const cText = (r.confirms || []).map(x => `✅ ${this.faMessage(x)}`).join("<br>");
+    const wText = (r.warnings || []).map(x => `⚠️ ${this.faMessage(x)}`).join("<br>");
     if (warnBox) warnBox.innerHTML = (cText ? cText + "<br>" : "") + (wText || "");
 
     const notifContent = document.getElementById("notifDropdownContent");
@@ -484,6 +1029,15 @@ window.GoldAI = {
   },
 
   updateExecutionPanel(r) {
+    // Dashboard MANUAL/AUTO quick-switch buttons — display-only sync, mirrors
+    // the execution panel's mode-switch below. Runs regardless of whether a
+    // signal is actionable so the buttons reflect TRADE_MODE at rest too.
+    const modeNow = (window.GoldAI_Config.TRADE_MODE || "manual").toLowerCase();
+    const manualBig = document.getElementById("modeManualBigBtn");
+    const autoBig = document.getElementById("modeAutoBigBtn");
+    if (manualBig) manualBig.classList.toggle("active", modeNow !== "auto");
+    if (autoBig) autoBig.classList.toggle("active", modeNow === "auto");
+
     const panel = document.getElementById("tradeExecutionPanel");
     if (!panel) return;
     const actionable = r && r.signal && !String(r.signal).includes("WAIT");
@@ -513,6 +1067,8 @@ window.GoldAI = {
 
   resetExecutionForm() {
     this.updateExecutionPanel(this.lastResult);
+    // Restore SYSTEM ON/OFF from backend after dashboard load
+    this.refreshSystemPowerFromServer();
   },
 
   reflectSystemPowerUI(enabled) {
@@ -523,8 +1079,8 @@ window.GoldAI = {
     btn.classList.toggle("off", !Boolean(enabled));
     btn.setAttribute("aria-pressed", Boolean(enabled) ? "true" : "false");
     label.textContent = Boolean(enabled) ? "SYSTEM ON" : "SYSTEM OFF";
-    const auto = document.getElementById("autoTradeToggle");
-    if (auto) auto.checked = Boolean(enabled);
+    // SYSTEM is independent of AUTO_TRADING_ENABLED / autoTradeToggle —
+    // never mirror SYSTEM state onto the Auto Trade Signal control.
   },
 
   async refreshSystemPowerFromServer() {
@@ -533,6 +1089,22 @@ window.GoldAI = {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json();
       this.reflectSystemPowerUI(Boolean(data.enabled));
+      // Mirror server trading controls into UI config (server is source of truth)
+      if (data.tradeMode) {
+        this._serverTradeMode = data.tradeMode === "auto" ? "auto" : "manual";
+        window.GoldAI_Config.TRADE_MODE = data.tradeMode === "auto" ? "auto" : "manual";
+        // repaint MANUAL/AUTO buttons with the server's mode (was painted before this fetch)
+        try { this.updateExecutionPanel(this.lastResult); } catch (_) {}
+      }
+      if (typeof data.autoTradingEnabled === "boolean") {
+        window.GoldAI_Config.AUTO_TRADING_ENABLED = data.autoTradingEnabled;
+        const auto = document.getElementById("autoTradeToggle");
+        if (auto) auto.checked = data.autoTradingEnabled;
+      }
+      if (data.activeTimeframe) {
+        window.GoldAI_Config.ACTIVE_TIMEFRAME = String(data.activeTimeframe).toLowerCase();
+      }
+      this.syncAutoTradeSignalVisibility && this.syncAutoTradeSignalVisibility();
       return Boolean(data.enabled);
     } catch (e) {
       console.warn("SYSTEM state read failed:", e.message);
@@ -540,14 +1112,50 @@ window.GoldAI = {
     }
   },
 
+  resetBacktest() {
+    const box = document.getElementById("backtestSummary");
+    const wrap = document.getElementById("backtestJournalWrap");
+    const table = document.getElementById("backtestJournal");
+    const err = document.getElementById("btRangeError");
+    const empty = document.getElementById("backtestEmptyState");
+    if (box) { box.classList.add("hidden"); box.innerHTML = ""; }
+    if (wrap) wrap.classList.add("hidden");
+    if (table) table.innerHTML = "";
+    if (err) { err.classList.add("hidden"); err.textContent = ""; }
+    if (empty) empty.classList.remove("hidden");
+    this._lastBacktestReport = null;
+  },
+
+  deleteBacktestResults() {
+    if (!confirm("نتایج بک‌تست فعلی حذف شود؟")) return;
+    this.resetBacktest();
+  },
+
   async toggleSystemPower() {
     const btn = document.getElementById("systemPowerBtn");
     if (btn) btn.disabled = true;
     try {
       const current = btn?.getAttribute("aria-pressed") === "true";
-      this.setAutoTradingEnabled(!current);
-      await new Promise(resolve => setTimeout(resolve, 300));
-      await this.refreshSystemPowerFromServer();
+      const next = !current;
+      // SYSTEM ON/OFF only — does NOT touch AUTO_TRADING_ENABLED, TRADE_MODE,
+      // or autoTradeToggle. Backend /api/mt5/system-state is the sole authority.
+      const res = await fetch(`${this.backendURL}/mt5/system-state`, {
+        method: "POST",
+        headers: this.apiAuthHeaders(),
+        body: JSON.stringify({ enabled: next })
+      });
+      if (res.status === 401) {
+        if (window.GoldAIAuthUI && typeof window.GoldAIAuthUI.reportUnauthorized === "function") {
+          window.GoldAIAuthUI.reportUnauthorized("system");
+        }
+        throw new Error("HTTP 401");
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      this.reflectSystemPowerUI(Boolean(data.enabled));
+      if (window.GoldAIAuthUI && typeof window.GoldAIAuthUI.reportOk === "function") {
+        window.GoldAIAuthUI.reportOk();
+      }
     } catch (e) {
       console.error("SYSTEM power toggle failed:", e);
       await this.refreshSystemPowerFromServer();
@@ -557,19 +1165,23 @@ window.GoldAI = {
   },
 
   setAutoTradingEnabled(on) {
+    // Auto Trade Signal only — does NOT change SYSTEM.
+    // Server trading-state is source of truth for Worker 24/7.
     window.GoldAI_Config.AUTO_TRADING_ENABLED = Boolean(on);
     const stored = JSON.parse(localStorage.getItem("goldai_settings") || "{}");
     stored.autoTradingEnabled = Boolean(on);
     localStorage.setItem("goldai_settings", JSON.stringify(stored));
-    // Records the real ON/OFF moment (sinceEpoch) server-side — this is the
-    // actual enforcement barrier backend/routes/mt5.js checks; the browser
-    // flag above is just local UI state. Fire-and-forget: a failed sync here
-    // does not block the toggle, but does leave the server-side barrier
-    // stale/unsynced, so a warning is logged rather than silently ignored.
-    fetch(`${this.backendURL}/mt5/system-state`, {
-      method: "POST", headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ enabled: Boolean(on) })
-    }).catch(e => console.warn("⚠️ SYSTEM state sync with backend failed — server-side ON/OFF barrier may be stale:", e.message));
+    const auto = document.getElementById("autoTradeToggle");
+    if (auto) auto.checked = Boolean(on);
+    fetch(`${this.backendURL}/mt5/trading-state`, {
+      method: "POST",
+      headers: this.apiAuthHeaders(),
+      body: JSON.stringify({ autoTradingEnabled: Boolean(on) })
+    }).then(async (res) => {
+      if (res.status === 401 && window.GoldAIAuthUI) {
+        window.GoldAIAuthUI.reportUnauthorized("trading");
+      }
+    }).catch(e => console.warn("trading-state autoTrading sync failed:", e.message));
   },
 
   setTradeMode(mode) {
@@ -579,9 +1191,41 @@ window.GoldAI = {
     stored.tradeMode = mode;
     localStorage.setItem("goldai_settings", JSON.stringify(stored));
     this.updateExecutionPanel(this.lastResult);
+    this.syncAutoTradeSignalVisibility();
+    const prevMode = this._serverTradeMode || null;
+    fetch(`${this.backendURL}/mt5/trading-state`, {
+      method: "POST",
+      headers: this.apiAuthHeaders(),
+      body: JSON.stringify({ tradeMode: mode })
+    }).then(async (res) => {
+      if (res.ok) { this._serverTradeMode = mode; return; }
+      // Server did NOT accept the change: show the server's real mode again
+      if (res.status === 401 && window.GoldAIAuthUI && typeof window.GoldAIAuthUI.reportUnauthorized === "function") {
+        window.GoldAIAuthUI.reportUnauthorized("trading");
+      }
+      console.warn("trading-state tradeMode rejected by server: HTTP " + res.status);
+      try { alert("⛔ تغییر حالت معامله در سرور ثبت نشد" + (res.status === 401 ? " (رمز دسترسی را بررسی کنید)" : "") + ". حالت واقعی سرور دوباره نمایش داده می‌شود."); } catch (_) {}
+      await this.refreshSystemPowerFromServer();
+    }).catch(e => console.warn("trading-state tradeMode sync failed:", e.message));
+  },
+
+  syncAutoTradeSignalVisibility() {
+    const row = document.getElementById("autoTradeSignalRow");
+    if (!row) return;
+    const isAuto = (window.GoldAI_Config.TRADE_MODE || "manual").toLowerCase() === "auto";
+    row.classList.toggle("auto-trade-dimmed", !isAuto);
+    row.title = isAuto
+      ? "در حالت AUTO: در صورت روشن بودن، سیگنال معتبر به‌صورت خودکار ارسال می‌شود (SYSTEM باید ON باشد)."
+      : "فقط در حالت AUTO فعال است — در MANUAL سفارش خودکار ارسال نمی‌شود.";
   },
 
   async executeCurrentTrade(source, autoMeta) {
+    // Browser is NOT the Auto executor. Only manual (or explicit non-auto) may use this path.
+    if (String(source || "").toLowerCase() === "auto") {
+      console.warn("executeCurrentTrade(auto) blocked — Auto orders are Worker/Backend only");
+      return { ok: false, status: "BROWSER_AUTO_FORBIDDEN", message: "Auto execution is server-side only (Worker → Backend → Bridge)" };
+    }
+
     const r = this.lastResult;
     if (!r || !r.signal || String(r.signal).includes("WAIT")) {
       if (source !== "auto") alert("ابتدا یک سیگنال BUY/SELL معتبر ایجاد کنید.");
@@ -623,7 +1267,7 @@ window.GoldAI = {
     };
     try {
       const res = await fetch(`${this.backendURL}/mt5/send-signal`, {
-        method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload)
+        method: "POST", headers: this.apiAuthHeaders(), body: JSON.stringify(payload)
       });
       const data = await res.json();
       if (!res.ok || data.status !== "FILLED") throw new Error(data.message || data.details?.message || "MT5 order was not filled");
@@ -682,6 +1326,7 @@ window.GoldAI = {
         const el = (id) => document.getElementById(id);
         if (el('advCapital')) el('advCapital').value = p.capital || 10000;
          if (el('autoTradeToggle')) el('autoTradeToggle').checked = !!p.autoTradingEnabled;
+        this.syncAutoTradeSignalVisibility();
         if (el('advRisk')) el('advRisk').value = p.risk || 1;
         if (el('userTpCount')) el('userTpCount').value = p.tpCount || 3;
         if (el('userSlMult')) el('userSlMult').value = p.slMult || 1.5;
@@ -691,13 +1336,22 @@ window.GoldAI = {
         if (el('userLot')) el('userLot').value = p.userLot || 0;
       }
       const symbolEl = document.getElementById("symbolSelect");
-      if (symbolEl) symbolEl.value = window.GoldAI_Config.SYMBOL || "XAU/USD";
+      if (symbolEl) {
+        symbolEl.value = window.GoldAI_Config.SYMBOL || "XAU/USD";
+        if (symbolEl.selectedIndex < 0) {
+          // config holds the broker symbol (e.g. "XAUUSD.") — match it to the option "XAU/USD"
+          const norm = (v) => String(v || "").toUpperCase().replace(/[^A-Z]/g, "");
+          const want = norm(window.GoldAI_Config.SYMBOL);
+          const opt = Array.from(symbolEl.options).find(o => norm(o.value) === want || norm(o.textContent) === want);
+          symbolEl.selectedIndex = opt ? opt.index : 0;
+        }
+      }
       const activeTf = window.GoldAI_Config.ACTIVE_TIMEFRAME || "m5";
       window.GoldAI_Config.STRATEGY_MODE = ["h1", "h4"].includes(activeTf) ? "swing" : "scalp";
       const tfSel = document.getElementById("activeTimeframeSelect");
       if (tfSel) tfSel.value = activeTf;
       const btLabel = document.getElementById("btActiveTfLabel");
-      if (btLabel) btLabel.textContent = activeTf.toUpperCase();
+      if (btLabel) btLabel.value = activeTf;
       // Mobile-First patch: same sync as setActiveTimeframe(), for correct
       // button/label state on first paint before any click happens.
       document.querySelectorAll(".tf-touch-btn").forEach(b => {
@@ -781,7 +1435,7 @@ window.GoldAI = {
     const sel = document.getElementById("activeTimeframeSelect");
     if (sel) sel.value = tf;
     const btLabel = document.getElementById("btActiveTfLabel");
-    if (btLabel) btLabel.textContent = tf.toUpperCase();
+    if (btLabel) btLabel.value = tf;
     // Mobile-First patch: sync the touch-friendly TF buttons + chart label.
     // Same tf value already used above — no new state introduced.
     document.querySelectorAll(".tf-touch-btn").forEach(b => {
@@ -789,25 +1443,51 @@ window.GoldAI = {
     });
     const chartTfLabel = document.getElementById("chartTfLabel");
     if (chartTfLabel) chartTfLabel.textContent = tf.toUpperCase();
+    // Server source of truth for Worker ACTIVE_TIMEFRAME (Auto Trading 24/7)
+    fetch(`${this.backendURL}/mt5/trading-state`, {
+      method: "POST",
+      headers: this.apiAuthHeaders(),
+      body: JSON.stringify({ activeTimeframe: tf.toUpperCase() })
+    }).catch(e => console.warn("trading-state activeTimeframe sync failed:", e.message));
     this.analyze();
   },
 
   /**
-   * NOTE on lot display: the Risk Management card intentionally shows NO lot
-   * value of its own (matching the reference design) — the lot is shown in
-   * exactly one place, the "اجرای معامله" execution panel's Lot field, and
-   * that value comes straight from the same GoldAI_Trade.createTradePlan()
-   * plan that gets sent to execution (see updateExecutionPanel/executeCurrentTrade).
-   * There is no longer a second, separately-computed lot anywhere in the UI.
+   * NOTE on lot display: there is still only ONE computed lot value in the
+   * app — GoldAI_Trade.createTradePlan()'s plan, stored on lastResult.lot,
+   * which feeds the "اجرای معامله" execution panel's Lot field exactly as
+   * before. The Dashboard's compact risk strip (below) now also *displays*
+   * that same value read-only, via #dashSuggestedLot in render() — this is
+   * the current reference layout's explicit 4th field (Capital/Risk/Max
+   * Loss/Suggested Lot). It is a read of the existing plan, not a second
+   * calculation, so it cannot drift from the execution panel's value.
    */
+  /** Reads real MT5 account equity (read-only GET) and shows it in the risk card. */
+  async refreshAccountFromServer() {
+    try {
+      const res = await fetch(`${this.backendURL}/mt5/account-info/dashboard`, { cache: "no-store" });
+      if (!res.ok) return;
+      const a = await res.json();
+      const eq = Number(a && a.equity);
+      if (Number.isFinite(eq) && eq > 0) {
+        this._accountEquity = eq;
+        this.updateRiskUI();
+      }
+    } catch (_) { /* keep last value */ }
+  },
+
   updateRiskUI() {
-    const cap = window.GoldAI_Data.getCapital();
+    const real = Number(this._accountEquity) > 0;
+    const cap = real ? Number(this._accountEquity.toFixed(2)) : window.GoldAI_Data.getCapital();
+    const capLbl = document.getElementById("capitalLabel");
+    if (capLbl) capLbl.textContent = real ? "موجودی حساب" : "سرمایه (تنظیمات)";
     const risk = window.GoldAI_Config.DEFAULT_RISK_PERCENT;
     const maxLoss = ((cap * risk) / 100).toFixed(2);
     const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
     set('capitalText', cap);
     set('riskText', risk + "%");
     set('maxLossText', maxLoss);
+    set('maxLossTextDash', maxLoss); // dashboard compact-strip mirror of the same value
 
     // Risk Guard status panel
     try {
@@ -873,25 +1553,17 @@ window.GoldAI = {
       else warning.classList.remove("hidden");
     }
 
-    const td = document.getElementById("timeDisplay");
-    if (td) {
+    const dateEl = document.getElementById("persianDate");
+    const timeEl = document.getElementById("persianTime");
+    if (dateEl || timeEl) {
       try {
-        const zones = [
-          { name: "تهران", tz: "Asia/Tehran" },
-          { name: "لندن", tz: "Europe/London" },
-          { name: "نیویورک", tz: "America/New_York" },
-          { name: "توکیو", tz: "Asia/Tokyo" }
-        ];
-        const clocksHTML = zones.map(z => {
-          const opt = { timeZone: z.tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
-          const f = new Intl.DateTimeFormat('fa-IR', opt).format(now);
-          return `<span><b>${z.name}</b> ${f}</span>`;
-        }).join('');
+        // Tehran only — per UI spec, no London/New York/Tokyo clocks.
         const dateOpt = { timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-        const persianDate = new Intl.DateTimeFormat('fa-IR', dateOpt).format(now);
-        td.innerHTML = `<div class="date-row">${persianDate}</div><div class="clocks">${clocksHTML}</div>`;
+        const timeOpt = { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+        if (dateEl) dateEl.textContent = new Intl.DateTimeFormat('fa-IR', dateOpt).format(now);
+        if (timeEl) timeEl.textContent = new Intl.DateTimeFormat('fa-IR', timeOpt).format(now);
       } catch (e) {
-        td.textContent = now.toUTCString();
+        if (timeEl) timeEl.textContent = now.toUTCString();
       }
     }
     this.updateRiskUI();
@@ -900,6 +1572,7 @@ window.GoldAI = {
   setupSettingsPanel() {},
 
   showPanel(name) {
+    if (name === "analysis") name = "chart"; // old tab merged into the chart tab (2026-10-07)
     document.querySelectorAll(".panel").forEach(p => p.classList.add("hidden"));
     document.getElementById("panel-" + name)?.classList.remove("hidden");
     document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));
@@ -942,8 +1615,7 @@ window.GoldAI = {
     else lines.push(side + " " + symbol);
     if (sl) lines.push("SL: " + sl);
     if (fmt(r.tp1)) lines.push("TP1: " + fmt(r.tp1));
-    if (tpCount >= 2 && fmt(r.tp2)) lines.push("TP2: " + fmt(r.tp2));
-    if (tpCount >= 3 && fmt(r.tp3)) lines.push("TP3: " + fmt(r.tp3));
+    // TP2/TP3 are manual-only (see Settings) — the shared signal carries TP1 like the auto trade.
     return lines.join("\n");
   },
 

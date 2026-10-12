@@ -9,12 +9,12 @@ const MS = {
   memoryMap: {}   // key → { trend }
 };
 
-function getMemoryKey(highs, lows, closes) {
-  // Simple stable key based on series identity (length + last values)
-  const lastH = highs && highs.length ? highs[highs.length - 1] : 0;
-  const lastL = lows && lows.length ? lows[lows.length - 1] : 0;
-  const lastC = closes && closes.length ? closes[closes.length - 1] : 0;
-  return (highs ? highs.length : 0) + "_" + lastH + "_" + lastL + "_" + lastC;
+function getMemoryKey(highs, lows, closes, cfg) {
+  // Stable per symbol+TF so prevTrend survives candle-to-candle (CHoCH memory).
+  // Do NOT key on last OHLC — that created a new empty memory every bar.
+  const sym = (cfg && (cfg.SYMBOL || cfg.symbol)) || "XAU";
+  const tf = (cfg && (cfg.ACTIVE_TIMEFRAME || cfg.TF || cfg.timeframe)) || "DEFAULT";
+  return String(sym).toUpperCase() + "|" + String(tf).toUpperCase();
 }
 
 function isSwingHigh(prices, i, lb) {
@@ -78,6 +78,14 @@ function analyzeMarketStructure(highs, lows, closes, cfg) {
 
   result.swingHigh = lh.price;
   result.swingLow = ll.price;
+  result.swingHighs = swings.highs.slice(-8).map(s => s.price);
+  result.swingLows = swings.lows.slice(-8).map(s => s.price);
+  // ADDED 2026-10-07: faster swings (confirmed after 3 bars instead of 5) used
+  // ONLY for stop / target placement, so levels are not stale. Trend logic
+  // above still uses the normal swings.
+  const fast = findSwings(highs, lows, 3);
+  result.swingHighsFast = fast.highs.slice(-12).map(s => s.price);
+  result.swingLowsFast = fast.lows.slice(-12).map(s => s.price);
 
   const HH = lh.price > ph.price;
   const LH = lh.price < ph.price;
@@ -105,32 +113,58 @@ function analyzeMarketStructure(highs, lows, closes, cfg) {
     result.sellScore += 1;
     result.reason.push("Mixed HH-LL");
   } else if (LH && HL) {
+    // Two-swing LH-HL is often a pullback inside a larger trend, not a confirmed range market.
+    // Keep structure tag LH-HL for diagnostics; do NOT set structure.regime=RANGE (hard-gate input).
     result.trend = "RANGE";
     result.structure = "LH-HL";
-    result.regime = "RANGE";
-    result.reason.push("Range (LH-HL)");
+    result.regime = "NEUTRAL";
+    result.reason.push("LH-HL pullback/ambiguous (not confirmed range regime)");
   }
 
-  // BOS — break of last swing
-  const minBreak = (cfg.MIN_BREAK_STRENGTH || 0.15) / 100 * price;
+  // BOS — break of last swing (score scaled by break strength — weak BOS must not inflate)
+  const minBreakPct = (cfg.MIN_BREAK_STRENGTH != null ? cfg.MIN_BREAK_STRENGTH : 0.20);
+  const minBreak = minBreakPct / 100 * price;
   if (price > lh.price + minBreak) {
     result.bos = true;
     result.bosDir = "BULLISH";
     result.breakStrength = Number((((price - lh.price) / price) * 100).toFixed(3));
-    result.buyScore += 5;
-    result.confidence += 15;
+    // Scale: 0.20% → ~2 pts, 0.40%+ → full 5 pts (was always +5 / +15 conf)
+    const bosPts = Math.min(5, Math.max(1.5, result.breakStrength * 12));
+    result.bosPts = bosPts;
+    result.buyScore += bosPts;
+    result.confidence += Math.min(10, Math.max(3, result.breakStrength * 25));
     result.reason.push(`Bullish BOS (str ${result.breakStrength}%)`);
   } else if (price < ll.price - minBreak) {
     result.bos = true;
     result.bosDir = "BEARISH";
     result.breakStrength = Number((((ll.price - price) / price) * 100).toFixed(3));
-    result.sellScore += 5;
-    result.confidence += 15;
+    const bosPts = Math.min(5, Math.max(1.5, result.breakStrength * 12));
+    result.bosPts = bosPts;
+    result.sellScore += bosPts;
+    result.confidence += Math.min(10, Math.max(3, result.breakStrength * 25));
     result.reason.push(`Bearish BOS (str ${result.breakStrength}%)`);
   }
 
+  // Classification only: a validated BOS (same minBreak thresholds) means the
+  // active structure is directional. Mixed swing tags (e.g. HH-LL) must not keep
+  // regime=RANGE / trend=VOLATILE when price has already broken the swing.
+  // Does NOT change MIN_BREAK_STRENGTH, scores already applied above, or gates.
+  if (result.bos && result.bosDir === "BULLISH") {
+    result.trend = "BULLISH";
+    if (result.regime === "RANGE" || result.regime === "NEUTRAL" || result.regime === "UNKNOWN") {
+      result.regime = "TREND";
+    }
+    result.reason.push("BOS upgrades structure trend/regime to BULLISH/TREND");
+  } else if (result.bos && result.bosDir === "BEARISH") {
+    result.trend = "BEARISH";
+    if (result.regime === "RANGE" || result.regime === "NEUTRAL" || result.regime === "UNKNOWN") {
+      result.regime = "TREND";
+    }
+    result.reason.push("BOS upgrades structure trend/regime to BEARISH/TREND");
+  }
+
   // CHoCH — character change vs per-series memory (prevents M1 memory leaking into M5/H1)
-  const memKey = getMemoryKey(highs, lows, closes);
+  const memKey = getMemoryKey(highs, lows, closes, cfg);
   if (!MS.memoryMap[memKey]) MS.memoryMap[memKey] = { trend: "UNKNOWN" };
   const prevTrend = MS.memoryMap[memKey].trend;
 

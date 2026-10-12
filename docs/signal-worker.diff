@@ -1,0 +1,38 @@
+--- /home/claude/orig/backend/worker/signal-worker.js	2026-09-28 11:25:56.628821881 +0000
++++ /home/claude/work/backend/worker/signal-worker.js	2026-09-28 18:43:59.207227531 +0000
+@@ -16,6 +16,7 @@
+ const axios = require("axios");
+ const logger = require("./logger");
+ const store = require("./store");
++const attributionWriter = require("./attribution-writer");
+ const mt5 = require("./mt5-client");
+ const { loadEngines } = require("./engine-loader");
+ 
+@@ -39,7 +40,11 @@
+ let cycleBusy = false;
+ 
+ function loadEnginesOnce() {
+-  if (!engines) engines = loadEngines();
++  if (!engines) {
++    engines = loadEngines();
++    // Diagnostic attribution is Worker-only and OFF unless ATTRIBUTION_ENABLED=true in the environment.
++    try { engines.GoldAI_Config.ATTRIBUTION_ENABLED = String(process.env.ATTRIBUTION_ENABLED || "false").toLowerCase() === "true"; } catch (_) {}
++  }
+   return engines;
+ }
+ 
+@@ -254,6 +259,14 @@
+   // Mark candle processed only after successful evaluation (signal object exists)
+   store.setLastCandle(tf, candleKey);
+   store.appendSignal(entry);
++  // Attribution (observation-only, default OFF, Worker-only). Reads final/layers; recomputes nothing.
++  // Async, bounded, rotating writer; any failure is swallowed and cannot affect the decision.
++  try {
++    if (cfg.ATTRIBUTION_ENABLED === true && engines.GoldAI_Attribution) {
++      const attr = engines.GoldAI_Attribution.safeBuild(final, final.layers || null, cfg);
++      if (attr) attributionWriter.enqueue({ id: entry.id, symbol, timeframe: tf, candleTimestamp: lastClosed.time, attribution: attr });
++    }
++  } catch (_) { /* never affects the decision */ }
+   const _d = (final && final.diagnostics) ? final.diagnostics : {};
+   const _edge = final && final.directionalEdge != null ? final.directionalEdge : _d.directionalEdge;
+   const _rej = final && (final.primaryReject || _d.primaryRejectFinal || _d.primaryReject) || "-";

@@ -1,0 +1,47 @@
+GoldAI Minimal Diagnostic Patch — qualityReasons attribution
+
+FILES CHANGED
+1. js/engines/conflict-filter.js
+   - qualityReasons[] init in runSignalQuality
+   - HTF WEAK exceptional branch: qualityReasons.push("HTF_WEAK") only
+   - qualityParts + return + diagnostics include qualityReasons
+   - runConflictFilter merge preserves qualityReasons on final/diagnostics
+
+2. js/engines/trade-permission.js
+   - pass-through: qualityReasons = (qualityResult.qualityReasons||[]).slice()
+   - return includes qualityReasons
+   - NO change to floor / DATA_MODE / risk / dedup
+
+3. backend/worker/signal-worker.js
+   - diagnostics.qualityReasons passthrough to journal/API
+   - diag log line adds qualityReasons=...
+   - NO executionEligible / gate logic change
+
+BEHAVIOR UNCHANGED
+- confidence -= 18 (exceptional HTF)
+- exceptional condition (edge>=9, regime!==RANGE, structure trend)
+- HTF hard WAIT path
+- REGIME_RANGE gate
+- MIN_CONFIDENCE 68, STRICT_MODE true, AUTO_MIN_CONFIDENCE 80
+- Trade Permission floor
+- score.js / RANGE Architecture labels / execution
+
+THRESHOLDS UNCHANGED: ALL
+EXECUTION UNCHANGED: YES
+RANGE FIX UNCHANGED: YES
+
+VALIDATION
+node --check js/engines/conflict-filter.js → PASS
+node --check js/engines/trade-permission.js → PASS
+node --check backend/worker/signal-worker.js → PASS
+
+STATIC VERIFY PRESENT
+confidence -= 18
+edge >= 9 exceptional
+REGIME_RANGE gate
+MIN_CONFIDENCE / STRICT_MODE in config
+executionEligible logic untouched in meaning
+
+EXPECTED TRACE
+seed~59 → exceptional -18 → conf 41, qualityReasons=["HTF_WEAK"], primaryReject null
+→ Permission floor → WAIT LOW_CONFIDENCE, qualityReasons still ["HTF_WEAK"]

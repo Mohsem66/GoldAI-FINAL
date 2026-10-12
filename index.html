@@ -9,68 +9,57 @@
 </head>
 <body>
   <div class="app">
-    <header class="header">
-      <div class="topbar">
+    <header class="header header-clean">
+      <div class="topbar topbar-brand-row">
         <div class="brand">
           <span class="brand-mark">🪙</span>
-          <span class="brand-name">GoldAI</span>
-        </div>
-
-        <div class="topbar-center">
-          <div class="symbol-row">
-            <select id="symbolSelect" onchange="GoldAI.changeSymbol()">
-              <option value="XAU/USD">XAUUSD</option>
-              <option value="EUR/USD">EURUSD</option>
-              <option value="GBP/USD">GBPUSD</option>
-              <option value="USD/JPY">USDJPY</option>
-              <option value="AUD/USD">AUDUSD</option>
-              <option value="USD/CAD">USDCAD</option>
-              <option value="GBP/JPY">GBPJPY</option>
-              <option value="EUR/JPY">EURJPY</option>
-            </select>
-            <span>▾</span>
-          </div>
-          <div class="symbol-sub" id="symbolSub">Gold / US Dollar</div>
-          <div class="price-row">
-            <span class="price-big" id="goldPrice">—</span>
-            <span class="price-change flat" id="priceChangeText">—</span>
+          <div class="brand-text">
+            <span class="brand-name">GoldAI</span>
+            <span class="brand-tag">Smart Trading, Better Results</span>
           </div>
         </div>
 
         <div class="topbar-actions">
-          <span class="live-pill demo" id="dataModeBadge" title="منبع داده"><span class="pulse-dot"></span><span id="dataModeBadgeText">DEMO</span></span>
-          <button type="button" class="btn-icon notif-bell-btn" onclick="GoldAI.toggleNotificationsPanel()" title="هشدارها">🔔<span id="notifDot" class="notif-dot hidden"></span></button>
-          <div id="notifDropdown" class="notif-dropdown hidden">
-            <div id="notifDropdownContent" class="notif-empty">هنوز هشداری ثبت نشده</div>
+          <div class="system-power-section">
+            <button type="button" class="system-power-btn off" id="systemPowerBtn" onclick="GoldAI.toggleSystemPower()" aria-pressed="false" title="سیستم را روشن/خاموش کنید">
+              <span class="system-power-dot"></span>
+              <span class="system-power-label" id="systemPowerLabel">SYSTEM OFF</span>
+            </button>
           </div>
+          <button type="button" class="btn-icon btn-settings-gear" onclick="GoldAI.openSettingsModal()" title="تنظیمات">⚙️</button>
         </div>
       </div>
 
-      <div class="header-middle">
-        <div class="market-time-section">
-          <div class="market-badge">
-            <span class="market-status" id="marketStatus">—</span>
-          </div>
-          <div id="timeDisplay" class="time-display">
-            <div class="date-row" id="persianDate">—</div>
-            <div class="time-row" id="persianTime">—</div>
-          </div>
+      <!-- Market status + Tehran date/time — moved here from the dashboard's
+           top-cards-row per the latest UI note, so it's visible immediately
+           in the Header. Same #marketStatus/#persianDate/#persianTime ids
+           that app.js already writes to every second — nothing else changed. -->
+      <div class="header-market-row">
+        <span class="market-status market-status-pill" id="marketStatus">—</span>
+        <div id="timeDisplay" class="time-display time-display-top">
+          <div class="date-row" id="persianDate">—</div>
+          <div class="time-row" id="persianTime">—</div>
         </div>
-
-        <div class="system-power-section">
-          <button type="button" class="system-power-btn off" id="systemPowerBtn" onclick="GoldAI.toggleSystemPower()" aria-pressed="false" title="سیستم را روشن/خاموش کنید">
-            <span class="system-power-dot"></span>
-            <span class="system-power-label" id="systemPowerLabel">SYSTEM OFF</span>
-          </button>
-        </div>
-
-        <button type="button" class="btn-icon" id="themeToggle" onclick="GoldAI.toggleTheme()" title="تغییر تم">🌙</button>
       </div>
 
-      <div id="marketClosedWarning" class="market-warning hidden">⛔ بازار بسته است</div>
-
-      <div class="controls-row">
-        <select id="activeTimeframeSelect" class="tf-dropdown" onchange="GoldAI.setActiveTimeframe(this.value)">
+      <!-- Symbol picker only — the price itself now shows once, in the
+           Dashboard's top price card (see panel-home). This <select> is kept
+           because GoldAI.changeSymbol() reads it; it's visually a small
+           inline control now instead of a duplicate price header row. -->
+      <div class="symbol-picker-row">
+        <div class="symbol-row">
+          <select id="symbolSelect" class="symbol-select-single" onchange="GoldAI.changeSymbol()" title="نماد فعال — فعلاً مسیر کامل معامله فقط برای طلا (XAUUSD) تأیید شده است">
+            <option value="XAU/USD">XAUUSD</option>
+            <option value="EUR/USD" disabled>EURUSD (تحلیل آزمایشی)</option>
+            <option value="GBP/USD" disabled>GBPUSD (تحلیل آزمایشی)</option>
+            <option value="USD/JPY" disabled>USDJPY (تحلیل آزمایشی)</option>
+            <option value="AUD/USD" disabled>AUDUSD (تحلیل آزمایشی)</option>
+            <option value="USD/CAD" disabled>USDCAD (تحلیل آزمایشی)</option>
+            <option value="GBP/JPY" disabled>GBPJPY (تحلیل آزمایشی)</option>
+            <option value="EUR/JPY" disabled>EURJPY (تحلیل آزمایشی)</option>
+          </select>
+        </div>
+        <select id="activeTimeframeSelect" class="tf-dropdown tf-dropdown-lg tf-in-header" onchange="GoldAI.setActiveTimeframe(this.value)" title="تایم‌فریم فعال">
           <option value="m1">M1</option>
           <option value="m5" selected>M5</option>
           <option value="m15">M15</option>
@@ -78,52 +67,119 @@
           <option value="h1">H1</option>
           <option value="h4">H4</option>
         </select>
-        <button type="button" class="btn-ghost btn-settings-row" onclick="GoldAI.openSettingsModal()">⚙️ تنظیمات</button>
+        <div class="topbar-actions">
+          <span class="live-pill demo" id="dataModeBadge" title="منبع داده"><span class="pulse-dot"></span><span id="dataModeBadgeText">DEMO</span></span>
+          <button type="button" class="btn-icon notif-bell-btn" onclick="GoldAI.toggleNotificationsPanel()" title="هشدارها">🔔<span id="notifDot" class="notif-dot hidden"></span></button>
+          <div id="notifDropdown" class="notif-dropdown hidden">
+            <div id="notifDropdownContent" class="notif-empty">هنوز هشداری ثبت نشده</div>
+          </div>
+          <button type="button" class="btn-icon" id="themeToggle" onclick="GoldAI.toggleTheme()" title="تغییر تم">🌙</button>
+        </div>
       </div>
+
+      <div id="marketClosedWarning" class="market-warning hidden">⛔ بازار بسته است</div>
+
     </header>
 
     <div id="panel-home" class="panel">
 
-      <!-- Signal Card -->
-      <div class="card signal-card" style="text-align:right">
+      <!-- Top 3 cards: Price / Market+Time / Signal Strength -->
+      <div class="top-cards-row">
+        <!-- 2026-10-07: live price + signal strength share ONE card (saves screen space on phones) -->
+        <div class="card top-card price-gauge-card">
+        <div class="pg-half pg-price price-top-card">
+          <div class="pg-brand">
+            <span class="top-card-icon price-top-card-icon">🪙</span>
+            <div class="top-card-title">XAUUSD</div>
+          </div>
+          <div class="top-card-body">
+            <div class="top-card-sub" id="symbolSub">Gold</div>
+            <div class="price-row price-row-top">
+              <span class="price-big" id="goldPrice">—</span>
+            </div>
+            <span class="price-change flat" id="priceChangeText">—</span>
+          </div>
+        </div>
+        <div class="pg-divider" aria-hidden="true"></div>
+        <div class="pg-half pg-gauge gauge-top-card">
+          <div class="top-card-title">قدرت سیگنال</div>
+          <div class="gauge-wrap gauge-wrap-semi" aria-label="Signal strength gauge">
+            <svg viewBox="0 0 140 88" class="gauge-svg gauge-svg-semi gauge-v2" role="img">
+              <defs>
+                <linearGradient id="gaugeZoneGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stop-color="#ff6b6b"/>
+                  <stop offset="50%" stop-color="#e6c35c"/>
+                  <stop offset="100%" stop-color="#3dce7a"/>
+                </linearGradient>
+              </defs>
+              <!-- outer thin colour ring: red (weak) → gold → green (strong) -->
+              <path class="gauge-zone" d="M 5 72 A 65 65 0 0 1 135 72"></path>
+              <!-- main arc: radius 50, centre (70,72) — geometry used by app.js -->
+              <path class="gauge-track" d="M 20 72 A 50 50 0 0 1 120 72"></path>
+              <g class="gauge-ticks"><line x1="13.5" y1="72.0" x2="8.5" y2="72.0" class="major"/><line x1="15.3" y1="54.2" x2="12.5" y2="53.3"/><line x1="23.5" y1="38.2" x2="21.1" y2="36.4"/><line x1="36.2" y1="25.5" x2="34.4" y2="23.1"/><line x1="52.2" y1="17.3" x2="51.3" y2="14.5"/><line x1="70.0" y1="15.5" x2="70.0" y2="10.5" class="major"/><line x1="87.8" y1="17.3" x2="88.7" y2="14.5"/><line x1="103.8" y1="25.5" x2="105.6" y2="23.1"/><line x1="116.5" y1="38.2" x2="118.9" y2="36.4"/><line x1="124.7" y1="54.2" x2="127.5" y2="53.3"/><line x1="126.5" y1="72.0" x2="131.5" y2="72.0" class="major"/></g>
+              <path class="gauge-fill" id="signalGaugeFill" d="M 20 72 A 50 50 0 0 1 120 72" stroke-dasharray="157.08" stroke-dashoffset="157.08"></path>
+              <circle id="signalGaugeTip" class="gauge-tip" cx="20" cy="72" r="5.5" opacity="0"></circle>
+              <text class="gauge-scale" x="20" y="87" text-anchor="middle">0</text>
+              <text class="gauge-scale" x="120" y="87" text-anchor="middle">100</text>
+            </svg>
+            <div class="gauge-center gauge-center-semi"><span id="signalStrengthText">0%</span></div>
+          </div>
+          <span id="signalStrengthTag" class="strength-tag weak">—</span>
+        </div>
+        </div>
+      </div>
+
+      <!-- Current Signal Card -->
+      <div class="card signal-card signal-card-wide" style="text-align:right">
         <div class="signal-card-head">
           <h3>سیگنال فعلی</h3>
           <span class="status-dot-badge" id="signalActiveStatus"><span class="dot"></span><span>فعال</span></span>
         </div>
 
-        <div class="signal-main-row">
+        <div class="signal-main-row signal-main-row-wide">
           <div class="signal-main-left">
             <div class="signal-icon-circle" id="signalIconCircle"><span id="signalArrowIcon">•</span></div>
             <div>
               <div id="signal" class="signal-value wait">WAIT</div>
               <div class="signal-strength-badge">
-                <span id="signalStrengthTag" class="strength-tag weak">—</span>
                 <span id="signalStrengthPercentText">0%</span>
               </div>
             </div>
           </div>
-          <div class="gauge-wrap">
-            <svg viewBox="0 0 120 120" class="gauge-svg">
-              <circle class="gauge-track" cx="60" cy="60" r="52"></circle>
-              <circle class="gauge-fill" id="signalGaugeFill" cx="60" cy="60" r="52" stroke-dasharray="326.7" stroke-dashoffset="326.7"></circle>
-            </svg>
-            <div class="gauge-center"><span id="signalStrengthText">0%</span></div>
-            <div class="gauge-caption">قدرت سیگنال</div>
+          <div class="signal-meta-col">
+            <span class="signal-meta-chip" id="signalMetaTF">⏱ M5</span>
+            <span class="signal-meta-chip" id="signalMetaDate">📅 —</span>
+            <span class="signal-meta-chip" id="signalMetaTime">🕒 —</span>
           </div>
         </div>
 
-        <div class="signal-meta-row">
-          <span class="signal-meta-chip" id="signalMetaTF">⏱ M5</span>
-          <span class="signal-meta-chip" id="signalMetaDate">📅 —</span>
-          <span class="signal-meta-chip" id="signalMetaTime">🕒 —</span>
-        </div>
-
+        <div class="signal-exec-status hidden" id="signalExecStatus"></div>
         <div class="signal-details" id="signalDetails"></div>
         <div id="warnings" class="warnings"></div>
         <div class="signal-actions">
-          <button type="button" class="btn-ghost" onclick="GoldAI.analyze()" id="analyzeBtn">🔄 تحلیل مجدد</button>
-          <button type="button" class="btn-icon" onclick="GoldAI.shareSignal()" title="اشتراک‌گذاری سیگنال">📤</button>
+          <button type="button" class="btn-icon btn-share-signal" onclick="GoldAI.shareSignal()" title="اشتراک‌گذاری سیگنال"><span aria-hidden="true">📤</span><span>اشتراک‌گذاری</span></button>
         </div>
+      </div>
+
+      <!-- Manual / Auto quick switch (mirrors execution panel's mode switch) -->
+      <div class="mode-switch-big">
+        <button type="button" class="mode-btn-big" id="modeManualBigBtn" onclick="GoldAI.setTradeMode('manual')">
+          <span class="mode-btn-big-icon">✋</span><span>MANUAL</span>
+        </button>
+        <button type="button" class="mode-btn-big" id="modeAutoBigBtn" onclick="GoldAI.setTradeMode('auto')">
+          <span class="mode-btn-big-icon">⚙️</span><span>AUTO</span>
+        </button>
+      </div>
+
+      <!-- AUTO TRADE SIGNAL — same control as #autoTradeToggle (single source, not a duplicate) -->
+      <div class="card auto-trade-signal-card" id="autoTradeSignalRow">
+        <label class="toggle-row auto-trade-signal-toggle">
+          <input type="checkbox" id="autoTradeToggle" onchange="GoldAI.setAutoTradingEnabled(this.checked)">
+          <span class="auto-trade-signal-label">
+            <strong>ارسال خودکار سفارش</strong>
+            <small>اجرای خودکار سفارش از روی سیگنال — فقط در حالت AUTO و وقتی SYSTEM روشن است</small>
+          </span>
+        </label>
       </div>
 
       <!-- Execution Panel -->
@@ -137,11 +193,10 @@
         </div>
         <div id="executionModeNote" class="exec-note">مقادیر توسط AI محاسبه می‌شوند.</div>
         <div class="exec-grid-5">
-          <label>Entry<input id="execEntry" type="number" step="any"></label>
-          <label>Lot<input id="execLot" type="number" step="0.01" min="0.01"></label>
+          <label>ورود<input id="execEntry" type="number" step="any"></label>
+          <label>حجم<input id="execLot" type="number" step="0.01" min="0.01"></label>
           <label>SL<input id="execSL" type="number" step="any"></label>
           <label>TP1<input id="execTP" type="number" step="any"></label>
-          <label>TP2<input id="execTP2" type="number" step="any" readonly></label>
         </div>
         <div class="exec-actions">
           <button type="button" class="btn-main" onclick="GoldAI.executeCurrentTrade('manual')">📤 ارسال سفارش</button>
@@ -161,25 +216,78 @@
         <input type="number" id="userTp3Mult" value="5.0" />
       </div>
 
+      <!-- Indicator snapshot grid — mirrors values already rendered in the
+           Analysis panel (see render() in app.js); no new indicators or
+           computed values are introduced here, only display duplication. -->
+      <div class="indicator-grid">
+        <button type="button" class="indicator-tile" onclick="GoldAI.showPanel('chart')">
+          <span class="indicator-tile-icon ema">📈</span>
+          <span class="indicator-tile-body">
+            <span class="indicator-tile-label">روند میانگین‌ها (EMA)</span>
+            <span class="indicator-tile-value" id="dashEmaTrend">—</span>
+          </span>
+          <span class="indicator-tile-chev">›</span>
+        </button>
+        <button type="button" class="indicator-tile" onclick="GoldAI.showPanel('chart')">
+          <span class="indicator-tile-icon rsi">📉</span>
+          <span class="indicator-tile-body">
+            <span class="indicator-tile-label">قدرت حرکت (RSI)</span>
+            <span class="indicator-tile-value" id="dashRsiValue">—</span>
+            <span class="indicator-tile-sub" id="dashRsiZone">—</span>
+          </span>
+          <span class="indicator-tile-chev">›</span>
+        </button>
+        <button type="button" class="indicator-tile" onclick="GoldAI.showPanel('chart')">
+          <span class="indicator-tile-icon atr">〰️</span>
+          <span class="indicator-tile-body">
+            <span class="indicator-tile-label">نوسان (ATR)</span>
+            <span class="indicator-tile-value" id="dashAtrValue">—</span>
+            <span class="indicator-tile-sub" id="dashAtrZone">شدت نوسان: —</span>
+          </span>
+          <span class="indicator-tile-chev">›</span>
+        </button>
+        <button type="button" class="indicator-tile" onclick="GoldAI.showPanel('chart')">
+          <span class="indicator-tile-icon structure">📊</span>
+          <span class="indicator-tile-body">
+            <span class="indicator-tile-label">ساختار بازار</span>
+            <span class="indicator-tile-value" id="dashStructValue">—</span>
+          </span>
+          <span class="indicator-tile-chev">›</span>
+        </button>
+        <button type="button" class="indicator-tile" onclick="GoldAI.showPanel('chart')">
+          <span class="indicator-tile-icon trademgmt">🛡️</span>
+          <span class="indicator-tile-body">
+            <span class="indicator-tile-label">مدیریت معامله</span>
+            <span class="indicator-tile-value" id="dashTradeMgmtValue">فعال</span>
+          </span>
+          <span class="indicator-tile-chev">›</span>
+        </button>
+        <button type="button" class="indicator-tile" onclick="GoldAI.showPanel('chart')">
+          <span class="indicator-tile-icon conflict">🔀</span>
+          <span class="indicator-tile-body">
+            <span class="indicator-tile-label">تضاد نشانه‌ها</span>
+            <span class="indicator-tile-value" id="dashConflictValue">—</span>
+          </span>
+          <span class="indicator-tile-chev">›</span>
+        </button>
+      </div>
+
       <!-- Risk Card Summary (Compact) -->
       <div class="card risk-card-compact">
         <div class="risk-header"><h3>ریسک و مدیریت</h3>
           <span id="riskGuardBadge" class="rg-badge rg-ok">🛡️ ریسک فعال</span>
         </div>
-        <div class="risk-compact-row">
-          <div class="risk-item-compact"><span>سرمایه</span><b id="capitalText">10000</b></div>
+        <div class="risk-compact-row risk-compact-row-4">
+          <div class="risk-item-compact"><span id="capitalLabel">سرمایه</span><b id="capitalText">—</b></div>
           <div class="risk-item-compact"><span>ریسک</span><b id="riskText">1%</b></div>
-          <div class="risk-item-compact"><span>معاملات امروز</span><b id="rgTrades">0 / 5</b></div>
-          <div class="risk-item-compact"><span>حد روزانه</span><b id="rgDailyLimit">3R</b></div>
+          <div class="risk-item-compact"><span>حد ضرر ($)</span><b id="maxLossTextDash">100</b></div>
+          <!-- Read-only mirror of the execution panel's #execLot value (see
+               render() in app.js) — same r.lot, not a second computation. -->
+          <div class="risk-item-compact"><span>لات پیشنهادی</span><b id="dashSuggestedLot">—</b></div>
         </div>
       </div>
 
-      <div class="card social-card" id="socialCard">
-        <h3 class="social-card-title">شبکه‌های اجتماعی</h3>
-        <div class="social-row" id="socialRow"></div>
       </div>
-
-    </div>
 
     <!-- Chart Panel -->
     <div id="panel-chart" class="panel hidden">
@@ -204,28 +312,7 @@
         </div>
         <div class="date-range-hint">بازه فقط روی نمایش نمودار اعمال می‌شود؛ تحلیل و سیگنال بر اساس تایم‌فریم فعال و آخرین کندل‌ها است.</div>
       </div>
-    </div>
 
-    <!-- Signal Analysis Panel -->
-    <div id="panel-signal" class="panel hidden">
-      <div class="card">
-        <h3>📊 تحلیل سیگنال</h3>
-        <div id="signalAnalysisContent">
-          <!-- Signal explanation content will be rendered here -->
-          <div class="signal-explanation-placeholder">
-            <p>سیگنال جدیدی تولید نشده‌است. لطفاً از داشبورد «تحلیل مجدد» را انتخاب کنید.</p>
-          </div>
-        </div>
-      </div>
-
-      <button type="button" class="link-row" onclick="GoldAI.showPanel('analysis')">
-        <span>📈 جزئیات کامل اندیکاتورها</span><span class="chev">‹</span>
-      </button>
-    </div>
-
-    <!-- Analysis Panel (Indicators) -->
-    <div id="panel-analysis" class="panel hidden">
-      <div class="panel-back" onclick="GoldAI.showPanel('signal')">‹ بازگشت به سیگنال</div>
       <div class="card">
         <h3>📊 جزئیات اندیکاتورها</h3>
         <div class="detail-grid">
@@ -236,43 +323,17 @@
           <div class="detail-row"><span>MACD</span><span id="dMacd">—</span></div>
           <div class="detail-row"><span>ADX</span><span id="dAdx">—</span></div>
           <div class="detail-row"><span>ATR</span><span id="dAtr">—</span></div>
-          <div class="detail-row"><span>Volume</span><span id="dVol">—</span></div>
-          <div class="detail-row"><span>Structure</span><span id="dStruct">—</span></div>
-          <div class="detail-row"><span>Divergence</span><span id="dDiv">—</span></div>
+          <div class="detail-row"><span>حجم (Volume)</span><span id="dVol">—</span></div>
+          <div class="detail-row"><span>ساختار (Structure)</span><span id="dStruct">—</span></div>
+          <div class="detail-row"><span>واگرایی (Divergence)</span><span id="dDiv">—</span></div>
         </div>
-      </div>
-      <div class="card">
-        <h3>🧠 AI Analysis</h3>
-        <div class="detail-grid">
-          <div class="detail-row"><span>AI Signal</span><span id="dAiSignal">—</span></div>
-          <div class="detail-row"><span>AI Confidence</span><span id="dAiConf">—</span></div>
-          <div class="detail-row"><span>CPI</span><span id="dAiCpi">—</span></div>
-          <div class="detail-row"><span>Fed</span><span id="dAiFed">—</span></div>
-        </div>
-        <div id="dAiReasoning" class="reason-box">منتظر تحلیل...</div>
       </div>
     </div>
 
-    <!-- Risk Panel -->
-    <div id="panel-risk" class="panel hidden">
-      <div class="card">
-        <div class="risk-header"><h3>مدیریت ریسک</h3>
-          <span id="riskGuardBadge2" class="rg-badge rg-ok">🛡️ ریسک فعال</span>
-        </div>
-        <div class="risk-main-row risk-main-row-5">
-          <div class="risk-item"><span>سرمایه</span><b id="capitalText2">10000</b></div>
-          <div class="risk-item"><span>ریسک</span><b id="riskText2">1%</b></div>
-          <div class="risk-item"><span>حد ضرر ($)</span><b id="maxLossText">100</b></div>
-          <div class="risk-item"><span>معاملات امروز</span><b id="rgTrades2">0 / 5</b></div>
-          <div class="risk-item"><span>حد روزانه</span><b id="rgDailyLimit2">3R</b></div>
-        </div>
-        <div class="bar-track risk-progress"><div id="riskProgressBar" style="width:0%;background:var(--green)"></div></div>
-        <div class="risk-footer-row">
-          <span><b id="rgRealizedRValue">0</b>R محقق‌شده <span id="rgStatusHint" title="وضعیت Risk Guard">ⓘ</span></span>
-          <span class="rlink" onclick="GoldAI.resetRiskGuard()">ریست حد روزانه ›</span>
-        </div>
-      </div>
-    </div>
+    <!-- 2026-10-07: the old "تحلیل و ریسک" tab was merged into the chart tab above.
+         Its placeholder AI card and duplicate risk card were removed (the dashboard
+         already shows risk). Empty shell kept so old links to it do not break. -->
+    <div id="panel-analysis" class="panel hidden"></div>
 
     <!-- Signals History Panel -->
     <div id="panel-signals" class="panel hidden">
@@ -292,59 +353,83 @@
       </div>
     </div>
 
-    <!-- Backtest Panel -->
+    <!-- Backtest panel — rebuilt 2026-10-07 (phone-first). Logic: js/backtest-ui.js -->
     <div id="panel-backtest" class="panel hidden">
-      <div class="card">
-        <h3>🎯 بک‌تست</h3>
-        <div class="bt-tf-inherit">
-          تایم‌فریم: <b id="btActiveTfLabel">M5</b>
-          <span class="bt-tf-inherit-note">(از داشبورد — برای تغییر، تایم‌فریم را بالای صفحه اصلی عوض کنید)</span>
+      <div class="card bt-card bt2">
+        <div class="bt2-head">
+          <h3>🎯 بک‌تست</h3>
+          <span class="bt2-sub">روی کندل‌های واقعی متاتریدر</span>
         </div>
-        <div class="perf-actions" style="margin-bottom:10px">
-          <select id="btRangePreset" class="btn-ghost" style="padding:8px 10px" title="بازه زمانی بک‌تست" onchange="GoldAI.onBacktestRangeChange()">
-            <option value="1d">1 Day</option>
-            <option value="1w">1 Week</option>
-            <option value="1m" selected>1 Month</option>
-            <option value="1y">1 Year</option>
-            <option value="custom">Custom</option>
-          </select>
-          <input id="btCapital" type="number" placeholder="Capital" value="10000" class="btn-ghost" style="padding:8px 10px;width:100px">
-          <input id="btRisk" type="number" step="0.1" placeholder="Risk %" value="1" class="btn-ghost" style="padding:8px 10px;width:80px">
-          <input id="btMinConf" type="number" placeholder="Min Conf" value="68" class="btn-ghost" style="padding:8px 10px;width:90px">
-          <input id="btSlippage" type="number" step="1" placeholder="Slippage (pts)" value="2" class="btn-ghost" style="padding:8px 10px;width:110px">
-          <input id="btCount" type="number" step="100" placeholder="Bars" value="1500" class="btn-ghost" style="padding:8px 10px;width:90px" title="Legacy: only used when Range = none. Otherwise ignored.">
+
+        <div class="bt2-block">
+          <div class="bt2-selects">
+            <label class="bt2-sel">تایم‌فریم
+              <select id="btTfSelect" aria-label="تایم‌فریم بک‌تست">
+                <option value="M1">M1</option>
+                <option value="M5">M5</option>
+                <option value="M15">M15</option>
+                <option value="M30">M30</option>
+                <option value="H1">H1</option>
+                <option value="H4">H4</option>
+                <option value="D1">روزانه</option>
+              </select>
+            </label>
+            <label class="bt2-sel">بازه‌ی آزمون
+              <select id="btPeriodSelect" aria-label="بازه‌ی بک‌تست">
+                <option value="1d">۱ روز گذشته</option>
+                <option value="1w">۱ هفته گذشته</option>
+                <option value="1m">۱ ماه گذشته</option>
+                <option value="3m">۳ ماه گذشته</option>
+                <option value="6m">۶ ماه گذشته</option>
+                <option value="1y">۱ سال گذشته</option>
+                <option value="custom">از تاریخ … تا تاریخ</option>
+              </select>
+            </label>
+          </div>
+          <!-- Persian (Shamsi) date boxes — empty until the user picks a date (js/backtest-ui.js) -->
+          <div class="bt2-dates">
+            <label>از تاریخ<button type="button" id="btCustomStart" class="bt2-date" data-g="" data-which="start">انتخاب تاریخ</button></label>
+            <label>تا تاریخ<button type="button" id="btCustomEnd" class="bt2-date" data-g="" data-which="end">انتخاب تاریخ</button></label>
+          </div>
+          <div id="btRangeError" class="bt-error hidden"></div>
+          <div class="bt2-info" id="btInfoLine">—</div>
         </div>
-        <div id="btCustomRangeWrap" class="perf-actions hidden" style="margin-bottom:10px">
-          <label style="display:flex;flex-direction:column;font-size:11px;gap:4px">Start
-            <input id="btCustomStart" type="datetime-local" class="btn-ghost" style="padding:8px 10px">
-          </label>
-          <label style="display:flex;flex-direction:column;font-size:11px;gap:4px">End
-            <input id="btCustomEnd" type="datetime-local" class="btn-ghost" style="padding:8px 10px">
-          </label>
+
+        <div class="bt2-actions">
+          <button type="button" class="btn-main bt2-run" id="btRunBtn" onclick="GoldAI.runBacktest(this)">▶️ اجرای بک‌تست</button>
+          <button type="button" class="btn-ghost bt2-stop hidden" id="btStopBtn" onclick="GoldAI.stopBacktest()">⏹ توقف</button>
+          <div class="bt2-actions-row">
+            <button type="button" class="btn-ghost" id="btAuditBtn" onclick="GoldAI.runSignalAudit(this)">🔎 سیگنال‌های واقعی</button>
+            <button type="button" class="btn-ghost" id="btResetBtn" onclick="GoldAI.resetBacktest()">↻ ریست</button>
+          </div>
+          <div class="bt2-actions-row">
+            <button type="button" class="btn-ghost" id="btCsvBtn" onclick="GoldAI.exportBacktestCsv()">⬇️ خروجی فایل</button>
+            <button type="button" class="btn-ghost bt-danger" id="btDeleteBtn" onclick="GoldAI.deleteBacktestResults()">🗑️ پاک کردن تاریخچه</button>
+          </div>
         </div>
-        <div id="btRangeError" class="hidden" style="color:var(--red);font-size:12px;margin-bottom:8px"></div>
-        <div class="perf-actions">
-          <button type="button" class="btn-main" onclick="GoldAI.runBacktest(this)">🎯 Real MT5 Backtest</button>
-        </div>
-        <div id="backtestSummary" class="backtest-box hidden"></div>
-        <div id="backtestJournalWrap" class="hidden" style="margin-top:10px;max-height:360px;overflow:auto;border:1px solid #2a2a35;border-radius:10px">
-          <table id="backtestJournal" style="width:100%;border-collapse:collapse;font-size:11px;direction:ltr"></table>
-        </div>
+
+        <div class="bt2-progress hidden" id="btProgress"><div class="bt2-progress-bar" id="btProgressBar"></div><span id="btProgressText">۰٪</span></div>
+
+        <div id="backtestEmptyState" class="bt-empty">📭 هنوز بک‌تستی اجرا نشده</div>
+        <div id="backtestSummary" class="hidden"></div>
+        <div id="backtestJournalWrap" class="hidden"></div>
+      </div>
+
+      <div class="card bt2-history-card">
+        <div class="bt2-head"><h3>🕘 تاریخچه‌ی بک‌تست‌ها</h3></div>
+        <div id="btHistoryList" class="bt2-history"></div>
       </div>
     </div>
 
-    <!-- Auto Trading Panel -->
+    <!-- Auto Signal Monitor panel (signal detection only — order execution is AUTO TRADE SIGNAL on Dashboard) -->
     <div id="panel-trades" class="panel hidden">
       <div class="card">
-        <h3>⚡ معاملات خودکار</h3>
+        <h3>🔄 Auto Signal Monitor</h3>
         <label class="toggle-row">
           <input type="checkbox" id="autoSignalToggle" onchange="GoldAI_AutoSignal.toggle(this.checked)">
-          🔄 Auto Signal Monitor (روی بسته‌شدن هر کندل M5/M15 — فقط با داده زنده MT5)
+          پایش خودکار سیگنال روی بسته‌شدن هر کندل (فقط با داده زنده MT5)
         </label>
-        <label class="toggle-row">
-          <input type="checkbox" id="autoTradeToggle" onchange="GoldAI.setAutoTradingEnabled(this.checked)">
-          ⚡ اجرای خودکار سفارش در MT5 (فقط در حالت AUTO)
-        </label>
+        <p class="auto-signal-hint">اجرای سفارش جداست: کنترل <strong>ارسال خودکار سفارش</strong> روی داشبورد. SYSTEM باید ON باشد و حالت AUTO انتخاب شده باشد.</p>
         <div id="autoSignalStatus" style="margin-top:6px;font-size:12px;opacity:.75">خاموش</div>
         <div class="perf-actions" style="margin-top:6px">
           <button type="button" class="btn-ghost" onclick="GoldAI_AutoSignal.showJournal()">📒 Signal Journal</button>
@@ -359,9 +444,7 @@
     <!-- Bottom Navigation -->
     <nav class="nav">
       <button type="button" class="nav-btn active" data-panel="home" onclick="GoldAI.showPanel('home')"><span class="nav-icon">🏠</span><span>داشبورد</span></button>
-      <button type="button" class="nav-btn" data-panel="chart" onclick="GoldAI.showPanel('chart')"><span class="nav-icon">📈</span><span>نمودار</span></button>
-      <button type="button" class="nav-btn" data-panel="signal" onclick="GoldAI.showPanel('signal')"><span class="nav-icon">📊</span><span>سیگنال</span></button>
-      <button type="button" class="nav-btn" data-panel="risk" onclick="GoldAI.showPanel('risk')"><span class="nav-icon">⚠️</span><span>ریسک</span></button>
+      <button type="button" class="nav-btn" data-panel="chart" onclick="GoldAI.showPanel('chart')"><span class="nav-icon">📈</span><span>نمودار و تحلیل</span></button>
       <button type="button" class="nav-btn" data-panel="backtest" onclick="GoldAI.showPanel('backtest')"><span class="nav-icon">🎯</span><span>بک‌تست</span></button>
     </nav>
   </div>
@@ -382,14 +465,22 @@
   <script src="js/engines/fundamental.js"></script>
   <script src="js/engines/correlation.js"></script>
   <script src="js/engines/ai-brain.js"></script>
+  <script src="js/engines/htf-context.js"></script>
+  <script src="js/engines/market-regime.js"></script>
   <script src="js/engines/score.js"></script>
+  <script src="js/engines/trade-permission.js"></script>
   <script src="js/engines/conflict-filter.js"></script>
   <script src="js/engines/risk-guard.js"></script>
   <script src="js/engines/trade-management.js"></script>
   <script src="js/engines/backtest.js"></script>
   <script src="js/engines/auto-signal.js"></script>
+  <!-- Token-flow fix: shows a clear banner + "set token" modal on 401
+       from /mt5/system-state or /mt5/trading-state. Does not touch any
+       MT5/signal/risk/worker/execution logic. -->
+  <script src="js/auth-token-ui.js"></script>
   <script src="js/app.js"></script>
   <script src="js/ui-extras.js"></script>
+  <script src="js/backtest-ui.js"></script>
   <script src="js/chart.js"></script>
   <script src="js/social.js"></script>
   <script src="js/share-modal.js"></script>

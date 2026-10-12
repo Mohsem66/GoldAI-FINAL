@@ -2,6 +2,8 @@ const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const { requireApiToken } = require('../lib/auth-token');
+const serverRisk = require('../lib/server-risk');
 const router = express.Router();
 
 const MT5_CONFIG = {
@@ -44,7 +46,9 @@ const PYTHON_SERVER = (process.env.MT5_BRIDGE_URL || 'http://localhost:5001').re
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const SYSTEM_STATE_FILE = path.join(DATA_DIR, 'system-state.json');
+const TRADING_STATE_FILE = path.join(DATA_DIR, 'trading-state.json');
 const EXEC_LEDGER_FILE = path.join(DATA_DIR, 'execution-ledger.json');
+const SUPPORTED_AUTO_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
 const CLAIMS_DIR = path.join(DATA_DIR, 'claims'); // one lockfile per claimed candle
 
 const CANDLE_STALENESS_TOLERANCE_SEC = 5; // clock-skew tolerance for Gate 1 (never widened to hide a truly stale candle)
@@ -91,14 +95,111 @@ function setSystemState(enabled) {
   return state;
 }
 
+// ---- Trading control state (TRADE_MODE + AUTO_TRADING + ACTIVE_TIMEFRAME) --
+// Independent from SYSTEM. Fail-closed defaults: manual, autoTrading off, m5.
+
+function defaultTradingState() {
+  return {
+    tradeMode: 'manual',
+    autoTradingEnabled: false,
+    activeTimeframe: 'M5',
+    autoMinConfidence: serverRisk.DEFAULTS.AUTO_MIN_CONFIDENCE,
+    updatedAt: null
+  };
+}
+
+function getTradingState() {
+  const s = readJSONSafe(TRADING_STATE_FILE, null);
+  const d = defaultTradingState();
+  if (!s || typeof s !== 'object') return d;
+  const mode = String(s.tradeMode || 'manual').toLowerCase() === 'auto' ? 'auto' : 'manual';
+  const tf = String(s.activeTimeframe || 'M5').toUpperCase();
+  return {
+    tradeMode: mode,
+    autoTradingEnabled: s.autoTradingEnabled === true,
+    activeTimeframe: SUPPORTED_AUTO_TIMEFRAMES.includes(tf) ? tf : 'M5',
+    autoMinConfidence: Number.isFinite(Number(s.autoMinConfidence))
+      ? Number(s.autoMinConfidence)
+      : serverRisk.DEFAULTS.AUTO_MIN_CONFIDENCE,
+    updatedAt: s.updatedAt || null
+  };
+}
+
+function setTradingState(patch) {
+  const cur = getTradingState();
+  const next = { ...cur };
+  if (patch && typeof patch === 'object') {
+    if (patch.tradeMode != null) {
+      next.tradeMode = String(patch.tradeMode).toLowerCase() === 'auto' ? 'auto' : 'manual';
+    }
+    if (patch.autoTradingEnabled != null) {
+      next.autoTradingEnabled = patch.autoTradingEnabled === true;
+    }
+    if (patch.activeTimeframe != null) {
+      const tf = String(patch.activeTimeframe).toUpperCase();
+      if (!SUPPORTED_AUTO_TIMEFRAMES.includes(tf)) {
+        const err = new Error('unsupported activeTimeframe: ' + tf);
+        err.code = 'UNSUPPORTED_TF';
+        throw err;
+      }
+      next.activeTimeframe = tf;
+    }
+    if (patch.autoMinConfidence != null && Number.isFinite(Number(patch.autoMinConfidence))) {
+      next.autoMinConfidence = Number(patch.autoMinConfidence);
+    }
+  }
+  next.updatedAt = new Date().toISOString();
+  writeJSONAtomic(TRADING_STATE_FILE, next);
+  return next;
+}
+
+/** Combined control snapshot for Worker/Dashboard */
+function getControlState() {
+  return {
+    system: getSystemState(),
+    trading: getTradingState()
+  };
+}
+
 router.get('/system-state', (req, res) => {
-  res.json(getSystemState());
+  // Backward compatible + extended fields (trading nested, not mixed into enabled)
+  const sys = getSystemState();
+  const trading = getTradingState();
+  res.json({
+    ...sys,
+    tradeMode: trading.tradeMode,
+    autoTradingEnabled: trading.autoTradingEnabled,
+    activeTimeframe: trading.activeTimeframe,
+    autoMinConfidence: trading.autoMinConfidence,
+    trading
+  });
 });
 
-router.post('/system-state', (req, res) => {
+router.post('/system-state', requireApiToken, (req, res) => {
+  // Only toggles SYSTEM.enabled — does NOT change tradeMode / autoTradingEnabled
   const enabled = req.body && req.body.enabled === true;
   const state = setSystemState(enabled);
-  res.json(state);
+  res.json({ ...state, trading: getTradingState() });
+});
+
+router.get('/trading-state', (req, res) => {
+  res.json(getTradingState());
+});
+
+router.post('/trading-state', requireApiToken, (req, res) => {
+  try {
+    const state = setTradingState(req.body || {});
+    res.json(state);
+  } catch (e) {
+    if (e.code === 'UNSUPPORTED_TF') {
+      return res.status(400).json({ status: 'UNSUPPORTED_TIMEFRAME', message: e.message });
+    }
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/control-state', (req, res) => {
+  res.json(getControlState());
 });
 
 // ---- Gate 2: atomic per-candle claim ----------------------------------
@@ -165,7 +266,7 @@ function classifyBridgeResult(bridgeOnline, httpOk, data) {
 
 // ---- reconciliation (read-only — never sends an order) -----------------
 
-router.get('/reconcile/:clientOrderId', async (req, res) => {
+router.get('/reconcile/:clientOrderId', requireApiToken, async (req, res) => {
   const clientOrderId = req.params.clientOrderId;
   const ledger = readLedger();
   const entry = ledger[clientOrderId];
@@ -203,19 +304,76 @@ router.get('/reconcile/:clientOrderId', async (req, res) => {
   }
 });
 
-router.post('/send-signal', async (req, res) => {
+router.post('/send-signal', requireApiToken, async (req, res) => {
   try {
     const {
       signal, entry, sl, tp1, tp2, tp3, volume,
-      symbol, mode, clientOrderId, deviation, candleCloseTime
+      symbol, mode, clientOrderId, deviation, candleCloseTime, confidence
     } = req.body;
 
     const resolvedMode = mode === 'auto' ? 'auto' : 'manual';
+    const trading = getTradingState();
+
+    // --- Gate 0: signal side + WAIT ------------------------------------
+    const sideCheck = serverRisk.validateSignalSide(signal);
+    if (!sideCheck.ok) {
+      return res.json({ status: 'INVALID_SIGNAL', executionState: 'INVALID_SIGNAL', message: sideCheck.reason });
+    }
 
     // --- Gate 1: SYSTEM ON/OFF -----------------------------------------
     const sys = getSystemState();
     if (!sys.enabled) {
       return res.json({ status: 'SYSTEM_OFF', executionState: 'SYSTEM_OFF', message: 'SYSTEM is OFF — no new trade may open (position management is unaffected and continues elsewhere).' });
+    }
+
+    // --- Gate 1b: TRADE_MODE + AUTO_TRADING (auto only) ----------------
+    // Matrix: auto orders require tradeMode=auto AND autoTradingEnabled=true.
+    // Manual orders only need SYSTEM ON (human explicit approve).
+    if (resolvedMode === 'auto') {
+      if (trading.tradeMode !== 'auto') {
+        return res.json({ status: 'MODE_NOT_AUTO', executionState: 'MODE_NOT_AUTO', message: 'TRADE_MODE is not AUTO — auto order rejected.' });
+      }
+      if (trading.autoTradingEnabled !== true) {
+        return res.json({ status: 'AUTO_TRADING_OFF', executionState: 'AUTO_TRADING_OFF', message: 'AUTO_TRADING_ENABLED is false — auto order rejected.' });
+      }
+      const confCheck = serverRisk.checkConfidence(confidence, trading.autoMinConfidence);
+      if (!confCheck.ok) {
+        return res.json({ status: 'CONFIDENCE_LOW', executionState: 'CONFIDENCE_LOW', message: confCheck.reason });
+      }
+      const risk = await serverRisk.checkCanTrade({});
+      if (!risk.allowed) {
+        return res.json({ status: 'RISK_BLOCKED', executionState: 'RISK_BLOCKED', message: risk.reason });
+      }
+    }
+
+    // --- Gate 1c: SL/TP direction (server) -----------------------------
+    const slTp = serverRisk.validateSlTp(sideCheck.side, entry, sl, tp1);
+    if (!slTp.ok) {
+      return res.json({ status: 'INVALID_SL_TP', executionState: 'INVALID_SL_TP', message: slTp.reason });
+    }
+
+    // --- Gate 1d: volume positive (bridge still clamps to symbol specs) --
+    const volCheck = serverRisk.validateVolume(volume, null);
+    if (!volCheck.ok) {
+      return res.json({ status: 'INVALID_VOLUME', executionState: 'INVALID_VOLUME', message: volCheck.reason });
+    }
+
+    // --- Gate 1e: timeframe must match server activeTimeframe (auto) ----
+    if (resolvedMode === 'auto') {
+      const reqTf = String(req.body.timeframe || req.body.activeTimeframe || '').toUpperCase();
+      if (!reqTf) {
+        return res.json({ status: 'INVALID_REQUEST', executionState: 'INVALID_REQUEST', message: 'timeframe missing — required for auto execution (fail-closed).' });
+      }
+      if (!SUPPORTED_AUTO_TIMEFRAMES.includes(reqTf)) {
+        return res.json({ status: 'UNSUPPORTED_TIMEFRAME', executionState: 'UNSUPPORTED_TIMEFRAME', message: 'timeframe ' + reqTf + ' is not in allowed list ' + SUPPORTED_AUTO_TIMEFRAMES.join(',') });
+      }
+      if (reqTf !== String(trading.activeTimeframe).toUpperCase()) {
+        return res.json({
+          status: 'TIMEFRAME_MISMATCH',
+          executionState: 'TIMEFRAME_MISMATCH',
+          message: 'request timeframe ' + reqTf + ' does not match server activeTimeframe ' + trading.activeTimeframe
+        });
+      }
     }
 
     // --- candle staleness (auto only) -----------------------------------
@@ -276,6 +434,10 @@ router.post('/send-signal', async (req, res) => {
         bridgeStatus: response.data && response.data.status
       });
     }
+    // Only confirmed FILLED increments server risk trade counter
+    if (classification.state === 'EXECUTED') {
+      try { serverRisk.recordTradeExecuted(); } catch (_) {}
+    }
     // UNKNOWN is sticky by construction: the claim lockfile is never
     // deleted here for any outcome, so no subsequent request for the same
     // candle can ever win a new claim and retry — this holds regardless of
@@ -322,8 +484,16 @@ router.get('/candles', async (req, res) => {
     if (!Number.isFinite(count)) count = 120;
     count = Math.max(10, Math.min(count, 5000));
 
+    const start = req.query.start;
+    const end = req.query.end;
+    const params = { symbol, timeframe, count };
+    if (start != null && end != null && String(start) !== "" && String(end) !== "") {
+      params.start = start;
+      params.end = end;
+    }
+
     const response = await axios.get(`${PYTHON_SERVER}/candles`, {
-      params: { symbol, timeframe, count },
+      params,
       timeout: 20000 // large backtest pulls (up to 5000 bars) need more than the old 8s
     }).catch(() => ({
       data: { status: 'unavailable', message: 'MT5 Python bridge unreachable', candles: [] }
@@ -373,5 +543,34 @@ router.get('/health', async (req, res) => {
     });
   }
 });
+
+
+// ---- Restart fail-safe (Server-Authoritative defaults) -----------------
+// On Backend process start: SYSTEM OFF, TRADE_MODE manual, AUTO off.
+// Disable with GOLD_AI_RESTART_FAILSAFE=0 if operator wants state persistence across restarts.
+(function applyRestartFailSafe() {
+  if (process.env.GOLD_AI_RESTART_FAILSAFE === '0') return;
+  try {
+    ensureDataDirs();
+    const off = { enabled: false, sinceEpoch: Math.floor(Date.now() / 1000) };
+    writeJSONAtomic(SYSTEM_STATE_FILE, off);
+    const tfKeep = (() => {
+      try {
+        const s = readJSONSafe(TRADING_STATE_FILE, null);
+        const tf = s && s.activeTimeframe ? String(s.activeTimeframe).toUpperCase() : 'M5';
+        return SUPPORTED_AUTO_TIMEFRAMES.includes(tf) ? tf : 'M5';
+      } catch (_) { return 'M5'; }
+    })();
+    writeJSONAtomic(TRADING_STATE_FILE, {
+      tradeMode: 'manual',
+      autoTradingEnabled: false,
+      activeTimeframe: tfKeep,
+      autoMinConfidence: serverRisk.DEFAULTS.AUTO_MIN_CONFIDENCE,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (e) {
+    console.error('[mt5 routes] restart fail-safe error:', e.message);
+  }
+})();
 
 module.exports = router;

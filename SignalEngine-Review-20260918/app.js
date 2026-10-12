@@ -6,6 +6,16 @@ window.GoldAI = {
 
   lastResult: null,
   backendURL: 'http://localhost:5000/api',
+  // Demo: set window.GOLD_AI_API_TOKEN or localStorage goldai_api_token (same value as backend GOLD_AI_API_TOKEN).
+  // Never hardcode production secrets in repo.
+  apiAuthHeaders() {
+    const t = (typeof window !== 'undefined' && window.GOLD_AI_API_TOKEN)
+      || (function(){ try { return localStorage.getItem('goldai_api_token'); } catch(_){ return null; } })()
+      || '';
+    const h = { 'Content-Type': 'application/json' };
+    if (t) h['X-GoldAI-Token'] = t;
+    return h;
+  },
   currentUID: null,
   signalHistory: [],
   dynamicWeights: {},
@@ -16,10 +26,24 @@ window.GoldAI = {
     this.loadSettings();
     this.loadTheme();
     await data.loadAll();
+    if (window.GoldAI_AutoSignal && typeof window.GoldAI_AutoSignal.start === 'function') {
+      window.GoldAI_AutoSignal.start();
+    }
     data.seedDemo(); // no-op for any timeframe that already has real MT5/backend candles
     this.updatePriceUI();
     this.updateMarketClock();
     this.updateRiskUI();
+    // Sync MANUAL/AUTO dashboard buttons + execution panel visibility on first paint
+    // (display-only; lastResult is null pre-analysis, so panel stays hidden as before).
+    this.updateExecutionPanel(this.lastResult);
+    this.syncAutoTradeSignalVisibility();
+    // Restore SYSTEM ON/OFF from backend after dashboard load (independent of AUTO)
+    this.refreshSystemPowerFromServer();
+    // Mobile-First patch: paint the Live Chart with whatever candles loadAll()
+    // just fetched. Display-only — does not call analyze() or touch signals.
+    if (window.GoldAI_Chart && typeof window.GoldAI_Chart.render === "function") {
+      try { window.GoldAI_Chart.render(); } catch (_) {}
+    }
     this.setupSettingsPanel();
     this.setupNotificationPermission();
     setInterval(() => this.updateMarketClock(), 1000);
@@ -102,19 +126,15 @@ window.GoldAI = {
     const tp2Mult = parseFloat(document.getElementById('userTp2Mult').value) || 3.5;
     const tp3Mult = parseFloat(document.getElementById('userTp3Mult').value) || 5.0;
     const userLot = parseFloat(document.getElementById('userLot').value) || 0;
-    const strategyEl = document.getElementById('strategySelect');
-    const strategy = strategyEl ? strategyEl.value : window.GoldAI_Config.STRATEGY_MODE;
     window.GoldAI_Config.TP_COUNT = tpCount;
     window.GoldAI_Config.ATR_SL_MULT = slMult;
     window.GoldAI_Config.ATR_TP1_MULT = tp1Mult;
     window.GoldAI_Config.ATR_TP2_MULT = tp2Mult;
     window.GoldAI_Config.ATR_TP3_MULT = tp3Mult;
     window.GoldAI_Config.USER_LOT = userLot;
-    if (strategyEl) window.GoldAI_Config.STRATEGY_MODE = strategy;
     const stored = JSON.parse(localStorage.getItem('goldai_settings') || '{}');
     stored.tpCount = tpCount; stored.slMult = slMult; stored.tp1Mult = tp1Mult;
     stored.tp2Mult = tp2Mult; stored.tp3Mult = tp3Mult; stored.userLot = userLot;
-    if (strategyEl) stored.strategy = strategy;
     localStorage.setItem('goldai_settings', JSON.stringify(stored));
   },
   applyTradeSettings() {
@@ -180,14 +200,49 @@ window.GoldAI = {
       data.seedDemo(); // no-op for any timeframe that already has real MT5/backend candles
       this.updatePriceUI();
 
-      let entryTF = "m5", biasTF = "h1", scalpTF = "m1";
-      if (cfg.STRATEGY_MODE === "swing") { entryTF = "h1"; biasTF = "daily"; scalpTF = "m15"; }
+      // Real MT5 broker specs (tick size/value, contract size, volume step) for lot sizing.
+      // Previously only the backtest engine fetched these — the live/manual trade plan
+      // fell back to an approximate multiplier because cfg.SYMBOL_SPECS was never
+      // populated here, so the executed lot could drift from a broker-correct value.
+      // Cached per-symbol, refreshed at most every 5 minutes (these rarely change).
+      const specsStale = !cfg.SYMBOL_SPECS || cfg.__specsSymbol !== cfg.SYMBOL || (Date.now() - (cfg.__specsFetchedAt || 0)) > 5 * 60 * 1000;
+      if (specsStale) {
+        try {
+          const specsRes = await data.fetchMT5SymbolSpecs();
+          if (specsRes && specsRes.status === "ok") {
+            cfg.SYMBOL_SPECS = specsRes;
+            cfg.__specsSymbol = cfg.SYMBOL;
+            cfg.__specsFetchedAt = Date.now();
+          }
+        } catch (_) { /* keep last known specs (or none) — computeRiskLot() falls back safely */ }
+      }
+
+      // CENTRAL ACTIVE TIMEFRAME — single source of truth for live analysis,
+      // indicators, signal, entry/SL/TP, trade plan, AND Backtest (see
+      // setActiveTimeframe() / the header dropdown). Bias/micro layers are
+      // derived from it (same pipeline, same scoring — only the candle
+      // series changes): intraday timeframes bias off H1 with an M1 micro
+      // read; H1/H4 bias off Daily with an M15 micro read (same pairing the
+      // old scalp/swing modes already used).
+      const activeTF = ["m1", "m5", "m15", "m30", "h1", "h4"].includes(String(cfg.ACTIVE_TIMEFRAME || "").toLowerCase())
+        ? String(cfg.ACTIVE_TIMEFRAME).toLowerCase() : "m5";
+      const isIntraday = ["m1", "m5", "m15", "m30"].includes(activeTF);
+      const entryTF = activeTF;
+      const biasTF = isIntraday ? "h1" : "daily";
+      const scalpTF = isIntraday ? "m1" : "m15";
+      cfg.STRATEGY_MODE = isIntraday ? "scalp" : "swing"; // derived, not user-set — kept for any legacy reader
 
       const closes = data.closes[entryTF];
       const highs = data.highs[entryTF];
       const lows = data.lows[entryTF];
       const vols = data.volumes[entryTF];
       const candles = data.candles[entryTF];
+
+      // Mobile-First patch: keep the Live Chart in sync with the exact candle
+      // set the analysis pipeline is using for this run. Display-only.
+      if (window.GoldAI_Chart && typeof window.GoldAI_Chart.render === "function") {
+        try { window.GoldAI_Chart.render(entryTF, candles); } catch (_) {}
+      }
 
       let price = data.goldPrice || closes[closes.length - 1];
       const manualInput = document.getElementById("manualEntryInput");
@@ -208,6 +263,7 @@ window.GoldAI = {
       const macd = window.GoldAI_MACD.analyzeMACD(closes);
       const adx = window.GoldAI_ADX.analyzeADX(highs, lows, closes, cfg.ADX_PERIOD || 14);
       const atrL = window.GoldAI_ATR.analyzeATR(highs, lows, closes, cfg);
+      if (atrL && atrL.atr) window.GoldAI_LastATR = atrL.atr; // used by updateRiskUI() to project a risk-based lot before a plan exists
       const volume = window.GoldAI_Volume.analyzeVolume(vols, closes);
       const sr = window.GoldAI_SR.analyzeSR(highs, lows, price, cfg);
       const candleP = window.GoldAI_Candles.analyzeCandles(candles);
@@ -216,7 +272,18 @@ window.GoldAI = {
 
       const htfEma = window.GoldAI_EMA.analyzeEMA(htfCloses, htfCloses[htfCloses.length - 1], cfg);
       const htfStr = window.GoldAI_MarketStructure.analyzeMarketStructure(htfHighs, htfLows, htfCloses, cfg);
-      const htf = { trend: htfStr.trend !== "UNKNOWN" ? htfStr.trend : htfEma.trend, strength: htfEma.confidence > 70 ? "STRONG" : "WEAK" };
+      // HTF strength: previously used htfEma.confidence which does not exist → always WEAK.
+      // Derive from HTF structure regime + EMA alignment (real quality signal).
+      const htfTrend = htfStr.trend !== "UNKNOWN" ? htfStr.trend : htfEma.trend;
+      let htfStrength = "WEAK";
+      const htfRegimeTrend = htfStr.regime === "TREND";
+      const htfClear = htfTrend === "BULLISH" || htfTrend === "BEARISH";
+      const htfEmaAligned = (htfEma.trend === "BULLISH" || htfEma.trend === "BEARISH") && htfEma.trend === htfTrend;
+      const htfEdge = Math.abs((htfStr.buyScore || 0) - (htfStr.sellScore || 0));
+      if (htfClear && htfRegimeTrend && htfEmaAligned && htfEdge >= 4) htfStrength = "STRONG";
+      else if (htfClear && htfRegimeTrend && (htfEmaAligned || htfEdge >= 3)) htfStrength = "MODERATE";
+      else if (htfClear && htfRegimeTrend) htfStrength = "MODERATE";
+      const htf = { trend: htfTrend, strength: htfStrength };
 
       let m1 = null;
       if (m1Closes.length > 5) {
@@ -263,7 +330,7 @@ window.GoldAI = {
       const userLot = cfg.USER_LOT || 0;
       const plan = window.GoldAI_Trade.createTradePlan(
         final.signal, price, atrL.atr, data.getCapital(),
-        cfg.DEFAULT_RISK_PERCENT, cfg, cfg.SYMBOL_SPECS
+        cfg.DEFAULT_RISK_PERCENT, cfg, cfg.SYMBOL_SPECS, structure
       );
       if (userLot > 0) plan.lot = userLot;
 
@@ -272,7 +339,7 @@ window.GoldAI = {
         ...final, ...plan, price, layers,
         time: now.toLocaleString("fa-IR"),
         timestamp: now.toISOString(),
-        tf: cfg.STRATEGY_MODE === "scalp" ? "M1/M5" : "H1/H4",
+        tf: entryTF.toUpperCase(),
         reversal: reversal.signal
       };
 
@@ -322,16 +389,6 @@ window.GoldAI = {
     set("confidence", (r.confidence || 0) + "%");
     set("entry", fmt(r.entry));
     set("sl", fmt(r.stopLoss));
-    set("signalTime", r.time || "—");
-    set("signalTF", r.tf || "—");
-
-    const sigTextEl = document.getElementById("signalText");
-    if (sigTextEl) sigTextEl.textContent = r.signal || "WAIT";
-    const sigArrowEl = document.getElementById("signalArrow");
-    if (sigArrowEl) {
-      sigArrowEl.textContent = (r.signal && r.signal.includes("BUY")) ? "▲"
-        : (r.signal && r.signal.includes("SELL")) ? "▼" : "⏸";
-    }
 
     const tpCount = window.GoldAI_Config.TP_COUNT || 3;
     let detailsHtml = `<div class="detail-item"><span>ورود</span><b>${fmt(r.entry)}</b></div><div class="detail-item"><span>SL</span><b>${fmt(r.stopLoss)}</b></div><div class="detail-item"><span>TP1</span><b>${fmt(r.tp1)}</b></div>`;
@@ -341,14 +398,68 @@ window.GoldAI = {
     const sd = document.getElementById('signalDetails');
     if (sd) sd.innerHTML = detailsHtml;
 
+    const isBuy = !!(r.signal && r.signal.includes("BUY"));
+    const isSell = !!(r.signal && r.signal.includes("SELL"));
     const strength = Math.min(100, Math.max(0, r.confidence || 0));
-    const bar = document.getElementById("signalStrengthBar");
-    const text = document.getElementById("signalStrengthText");
-    if (bar) {
-      bar.style.width = strength + "%";
-      bar.style.background = strength >= 75 ? "var(--green)" : strength >= 55 ? "var(--gold)" : "var(--red)";
+
+    // Semicircular gauge (قدرت سیگنال). UI-presentation change only: was a
+    // full-circle SVG <circle>, now a half-circle SVG <path> (radius 50) per
+    // the reference design. strength/color/glow logic below is unchanged —
+    // only the dash-length constant changes, from a full circumference
+    // (2·π·r) to a half circumference (π·r), matching the new arc's length.
+    const gaugeFill = document.getElementById("signalGaugeFill");
+    const gaugeText = document.getElementById("signalStrengthText");
+    if (gaugeFill) {
+      const halfCircumference = Math.PI * 50;
+      gaugeFill.style.strokeDasharray = halfCircumference;
+      gaugeFill.style.strokeDashoffset = halfCircumference * (1 - strength / 100);
+      const gaugeColor = strength >= 75 ? (isBuy ? "var(--green)" : isSell ? "var(--red)" : "var(--gold-soft)") : strength >= 55 ? "var(--yellow)" : "var(--text-faint)";
+      gaugeFill.style.stroke = gaugeColor;
+      // Subtle glow only for a strong, actionable signal — kept small so it reads as premium, not neon.
+      gaugeFill.style.filter = (strength >= 75 && (isBuy || isSell)) ? `drop-shadow(0 0 4px ${gaugeColor})` : "none";
     }
-    if (text) text.textContent = strength + "%";
+    if (gaugeText) gaugeText.textContent = strength + "%";
+    const strengthPctText = document.getElementById("signalStrengthPercentText");
+    if (strengthPctText) strengthPctText.textContent = strength + "%";
+
+    // Strength tag (ضعیف / متوسط / قوی)
+    const tagEl = document.getElementById("signalStrengthTag");
+    if (tagEl) {
+      if (!isBuy && !isSell) {
+        tagEl.className = "strength-tag weak";
+        tagEl.textContent = "—";
+      } else if (strength >= 75) {
+        tagEl.className = "strength-tag strong" + (isBuy ? " buy-tag" : "");
+        tagEl.textContent = "قوی";
+      } else if (strength >= 55) {
+        tagEl.className = "strength-tag medium";
+        tagEl.textContent = "متوسط";
+      } else {
+        tagEl.className = "strength-tag weak";
+        tagEl.textContent = "ضعیف";
+      }
+    }
+
+    // BUY/SELL icon circle
+    const iconEl = document.getElementById("signalIconCircle");
+    const arrowEl = document.getElementById("signalArrowIcon");
+    if (iconEl) iconEl.className = "signal-icon-circle" + (isBuy ? " buy" : isSell ? " sell" : " wait");
+    if (arrowEl) arrowEl.textContent = isBuy ? "↑" : isSell ? "↓" : "•";
+
+    // Meta row: timeframe / date / time
+    const dt = r.timestamp ? new Date(r.timestamp) : new Date();
+    set("signalMetaTF", "⏱ " + (r.tf || "—"));
+    set("signalMetaDate", "📅 " + dt.toLocaleDateString("fa-IR"));
+    set("signalMetaTime", "🕒 " + dt.toLocaleTimeString("fa-IR"));
+
+    // Active/inactive status badge
+    const statusEl = document.getElementById("signalActiveStatus");
+    if (statusEl) {
+      const live = window.GoldAI_Data && window.GoldAI_Data.dataMode === "live";
+      statusEl.classList.toggle("inactive", !live);
+      const label = statusEl.querySelector("span:last-child");
+      if (label) label.textContent = live ? "فعال" : "غیرفعال";
+    }
 
     const sig = document.getElementById("signal");
     if (sig) {
@@ -388,17 +499,52 @@ window.GoldAI = {
     const reasonEl = document.getElementById("dAiReasoning");
     if (reasonEl) reasonEl.textContent = AI.reasoning || "منتظر تحلیل...";
 
+    // Dashboard indicator-tile mirrors — display duplication only, reading the
+    // same already-computed layer values as the Analysis panel above (no new
+    // indicators, no changed scoring/thresholds).
+    const trendLabel = { BULLISH: "Bullish", BEARISH: "Bearish", NEUTRAL: "Neutral", VOLATILE: "Volatile", RANGE: "Range" };
+    set("dashEmaTrend", trendLabel[L.ema?.trend] || L.ema?.trend || "—");
+    set("dashRsiValue", L.rsi?.rsi != null ? Number(L.rsi.rsi).toFixed(1) : "—");
+    set("dashRsiZone", L.rsi?.zone ? `${L.rsi.zone} (30–70)` : "—");
+    set("dashAtrValue", L.atr?.atr != null ? Number(L.atr.atr).toFixed(2) : "—");
+    const volLabel = { LOW: "Low", MEDIUM: "Medium", HIGH: "High" };
+    set("dashAtrZone", "Volatility: " + (volLabel[L.atr?.volatility] || L.atr?.volatility || "—"));
+    const structTrendLabel = { BULLISH: "Uptrend", BEARISH: "Downtrend", VOLATILE: "Volatile", RANGE: "Range" };
+    set("dashStructValue", structTrendLabel[L.structure?.trend] || L.structure?.trend || "—");
+    const hasConflictWarning = (r.warnings || []).some(w => /vs EMA|vs bearish|vs bullish|vs structure|opposite|HTF trend|CHoCH/i.test(String(w)));
+    set("dashConflictValue", hasConflictWarning ? "Conflict Detected" : "No Conflict");
+    // Read-only mirror of the exact same r.lot the execution panel's #execLot
+    // uses (see updateExecutionPanel) — not a second computation.
+    set("dashSuggestedLot", r.lot != null && r.lot !== "" ? r.lot : "—");
+
     const warnBox = document.getElementById("warnings");
-    if (warnBox) {
-      const c = (r.confirms || []).map(x => `✅ ${x}`).join("<br>");
-      const w = (r.warnings || []).map(x => `⚠️ ${x}`).join("<br>");
-      warnBox.innerHTML = (c ? c + "<br>" : "") + (w || "");
+    const cText = (r.confirms || []).map(x => `✅ ${x}`).join("<br>");
+    const wText = (r.warnings || []).map(x => `⚠️ ${x}`).join("<br>");
+    if (warnBox) warnBox.innerHTML = (cText ? cText + "<br>" : "") + (wText || "");
+
+    const notifContent = document.getElementById("notifDropdownContent");
+    if (notifContent) {
+      const combined = (cText ? cText + "<br>" : "") + (wText || "");
+      notifContent.innerHTML = combined
+        ? `<div style="margin-bottom:8px"><b>${r.signal || "—"}</b> · ${dt.toLocaleTimeString("fa-IR")}</div>${combined}`
+        : `<span class="notif-empty">هشدار یا تأییدی برای آخرین سیگنال ثبت نشده</span>`;
+      const dot = document.getElementById("notifDot");
+      if (dot) dot.classList.toggle("hidden", !combined);
     }
 
     document.getElementById("resultCard")?.classList.remove("hidden");
   },
 
   updateExecutionPanel(r) {
+    // Dashboard MANUAL/AUTO quick-switch buttons — display-only sync, mirrors
+    // the execution panel's mode-switch below. Runs regardless of whether a
+    // signal is actionable so the buttons reflect TRADE_MODE at rest too.
+    const modeNow = (window.GoldAI_Config.TRADE_MODE || "manual").toLowerCase();
+    const manualBig = document.getElementById("modeManualBigBtn");
+    const autoBig = document.getElementById("modeAutoBigBtn");
+    if (manualBig) manualBig.classList.toggle("active", modeNow !== "auto");
+    if (autoBig) autoBig.classList.toggle("active", modeNow === "auto");
+
     const panel = document.getElementById("tradeExecutionPanel");
     if (!panel) return;
     const actionable = r && r.signal && !String(r.signal).includes("WAIT");
@@ -408,21 +554,106 @@ window.GoldAI = {
     const fmt = n => (n == null || isNaN(n) ? "" : Number(n).toFixed(decs));
     const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
     setVal("execEntry", fmt(r.entry)); setVal("execSL", fmt(r.stopLoss));
-    setVal("execTP", fmt(r.tp1)); setVal("execLot", r.lot || "");
+    // execTP feeds the actual order sent to MT5 (TP1) — unchanged execution behavior.
+    // execTP2 is display-only context (matches the AI's plan) and is never sent to the backend.
+    setVal("execTP", fmt(r.tp1)); setVal("execTP2", fmt(r.tp2)); setVal("execLot", r.lot || "");
     const mode = (window.GoldAI_Config.TRADE_MODE || "manual").toLowerCase();
-    const modeEl = document.getElementById("tradeModeSelect");
-    if (modeEl) modeEl.value = mode;
+    const manualBtn = document.getElementById("modeManualBtn");
+    const autoBtn = document.getElementById("modeAutoBtn");
+    if (manualBtn) manualBtn.classList.toggle("active", mode !== "auto");
+    if (autoBtn) autoBtn.classList.toggle("active", mode === "auto");
     const note = document.getElementById("executionModeNote");
     if (note) note.textContent = mode === "auto"
       ? "حالت AUTO: مقادیر AI بدون ویرایش کاربر، پس از کنترل‌های ایمنی ارسال می‌شوند."
       : "حالت MANUAL: مقادیر توسط AI محاسبه شده‌اند و قبل از ارسال قابل ویرایش هستند.";
+    const hint = document.getElementById("executionHint");
+    if (hint) hint.textContent = mode === "auto"
+      ? "در حالت AUTO ویرایش کاربر دخالت ندارد."
+      : "در حالت MANUAL امکان ویرایش مقادیر وجود دارد.";
+  },
+
+  resetExecutionForm() {
+    this.updateExecutionPanel(this.lastResult);
+    // Restore SYSTEM ON/OFF from backend after dashboard load
+    this.refreshSystemPowerFromServer();
+  },
+
+  reflectSystemPowerUI(enabled) {
+    const btn = document.getElementById("systemPowerBtn");
+    const label = document.getElementById("systemPowerLabel");
+    if (!btn || !label) return;
+    btn.classList.toggle("on", Boolean(enabled));
+    btn.classList.toggle("off", !Boolean(enabled));
+    btn.setAttribute("aria-pressed", Boolean(enabled) ? "true" : "false");
+    label.textContent = Boolean(enabled) ? "SYSTEM ON" : "SYSTEM OFF";
+    // SYSTEM is independent of AUTO_TRADING_ENABLED / autoTradeToggle —
+    // never mirror SYSTEM state onto the Auto Trade Signal control.
+  },
+
+  async refreshSystemPowerFromServer() {
+    try {
+      const r = await fetch(`${this.backendURL}/mt5/system-state`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      this.reflectSystemPowerUI(Boolean(data.enabled));
+      // Mirror server trading controls into UI config (server is source of truth)
+      if (data.tradeMode) {
+        window.GoldAI_Config.TRADE_MODE = data.tradeMode === "auto" ? "auto" : "manual";
+      }
+      if (typeof data.autoTradingEnabled === "boolean") {
+        window.GoldAI_Config.AUTO_TRADING_ENABLED = data.autoTradingEnabled;
+        const auto = document.getElementById("autoTradeToggle");
+        if (auto) auto.checked = data.autoTradingEnabled;
+      }
+      if (data.activeTimeframe) {
+        window.GoldAI_Config.ACTIVE_TIMEFRAME = String(data.activeTimeframe).toLowerCase();
+      }
+      this.syncAutoTradeSignalVisibility && this.syncAutoTradeSignalVisibility();
+      return Boolean(data.enabled);
+    } catch (e) {
+      console.warn("SYSTEM state read failed:", e.message);
+      return null;
+    }
+  },
+
+  async toggleSystemPower() {
+    const btn = document.getElementById("systemPowerBtn");
+    if (btn) btn.disabled = true;
+    try {
+      const current = btn?.getAttribute("aria-pressed") === "true";
+      const next = !current;
+      // SYSTEM ON/OFF only — does NOT touch AUTO_TRADING_ENABLED, TRADE_MODE,
+      // or autoTradeToggle. Backend /api/mt5/system-state is the sole authority.
+      const res = await fetch(`${this.backendURL}/mt5/system-state`, {
+        method: "POST",
+        headers: this.apiAuthHeaders(),
+        body: JSON.stringify({ enabled: next })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      this.reflectSystemPowerUI(Boolean(data.enabled));
+    } catch (e) {
+      console.error("SYSTEM power toggle failed:", e);
+      await this.refreshSystemPowerFromServer();
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   },
 
   setAutoTradingEnabled(on) {
+    // Auto Trade Signal only — does NOT change SYSTEM.
+    // Server trading-state is source of truth for Worker 24/7.
     window.GoldAI_Config.AUTO_TRADING_ENABLED = Boolean(on);
     const stored = JSON.parse(localStorage.getItem("goldai_settings") || "{}");
     stored.autoTradingEnabled = Boolean(on);
     localStorage.setItem("goldai_settings", JSON.stringify(stored));
+    const auto = document.getElementById("autoTradeToggle");
+    if (auto) auto.checked = Boolean(on);
+    fetch(`${this.backendURL}/mt5/trading-state`, {
+      method: "POST",
+      headers: this.apiAuthHeaders(),
+      body: JSON.stringify({ autoTradingEnabled: Boolean(on) })
+    }).catch(e => console.warn("trading-state autoTrading sync failed:", e.message));
   },
 
   setTradeMode(mode) {
@@ -432,9 +663,31 @@ window.GoldAI = {
     stored.tradeMode = mode;
     localStorage.setItem("goldai_settings", JSON.stringify(stored));
     this.updateExecutionPanel(this.lastResult);
+    this.syncAutoTradeSignalVisibility();
+    fetch(`${this.backendURL}/mt5/trading-state`, {
+      method: "POST",
+      headers: this.apiAuthHeaders(),
+      body: JSON.stringify({ tradeMode: mode })
+    }).catch(e => console.warn("trading-state tradeMode sync failed:", e.message));
   },
 
-  async executeCurrentTrade(source) {
+  syncAutoTradeSignalVisibility() {
+    const row = document.getElementById("autoTradeSignalRow");
+    if (!row) return;
+    const isAuto = (window.GoldAI_Config.TRADE_MODE || "manual").toLowerCase() === "auto";
+    row.classList.toggle("auto-trade-dimmed", !isAuto);
+    row.title = isAuto
+      ? "در حالت AUTO: در صورت روشن بودن، سیگنال معتبر به‌صورت خودکار ارسال می‌شود (SYSTEM باید ON باشد)."
+      : "فقط در حالت AUTO فعال است — در MANUAL سفارش خودکار ارسال نمی‌شود.";
+  },
+
+  async executeCurrentTrade(source, autoMeta) {
+    // Browser is NOT the Auto executor. Only manual (or explicit non-auto) may use this path.
+    if (String(source || "").toLowerCase() === "auto") {
+      console.warn("executeCurrentTrade(auto) blocked — Auto orders are Worker/Backend only");
+      return { ok: false, status: "BROWSER_AUTO_FORBIDDEN", message: "Auto execution is server-side only (Worker → Backend → Bridge)" };
+    }
+
     const r = this.lastResult;
     if (!r || !r.signal || String(r.signal).includes("WAIT")) {
       if (source !== "auto") alert("ابتدا یک سیگنال BUY/SELL معتبر ایجاد کنید.");
@@ -465,11 +718,18 @@ window.GoldAI = {
       signal: isBuy ? "BUY" : "SELL", symbol: cfg.SYMBOL || "XAUUSD.",
       entry, sl, tp1, volume, mode: source === "auto" ? "auto" : "manual",
       clientOrderId: "GA-" + Date.now() + "-" + Math.random().toString(36).slice(2,8),
-      deviation: Number(cfg.EXECUTION_DEVIATION_POINTS || 20)
+      deviation: Number(cfg.EXECUTION_DEVIATION_POINTS || 20),
+      // Required by the backend's SYSTEM-ON staleness check and per-candle
+      // execution claim (auto only — manual trades are exempt, see
+      // backend/routes/mt5.js). Omitted entirely for manual trades.
+      ...(source === "auto" && autoMeta ? {
+        candleCloseTime: autoMeta.candleCloseTime,
+        timeframe: autoMeta.timeframe
+      } : {})
     };
     try {
       const res = await fetch(`${this.backendURL}/mt5/send-signal`, {
-        method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload)
+        method: "POST", headers: this.apiAuthHeaders(), body: JSON.stringify(payload)
       });
       const data = await res.json();
       if (!res.ok || data.status !== "FILLED") throw new Error(data.message || data.details?.message || "MT5 order was not filled");
@@ -515,7 +775,6 @@ window.GoldAI = {
         if (p.capital) window.GoldAI_Data.setCapital(p.capital);
         if (p.risk) window.GoldAI_Config.DEFAULT_RISK_PERCENT = p.risk;
         if (p.uid) this.currentUID = p.uid;
-        if (p.strategy) window.GoldAI_Config.STRATEGY_MODE = p.strategy;
         if (p.tpCount) window.GoldAI_Config.TP_COUNT = p.tpCount;
         if (p.symbol) window.GoldAI_Config.SYMBOL = p.symbol;
         if (p.slMult) window.GoldAI_Config.ATR_SL_MULT = p.slMult;
@@ -523,13 +782,14 @@ window.GoldAI = {
         if (p.tp2Mult) window.GoldAI_Config.ATR_TP2_MULT = p.tp2Mult;
         if (p.tp3Mult) window.GoldAI_Config.ATR_TP3_MULT = p.tp3Mult;
         if (p.userLot) window.GoldAI_Config.USER_LOT = p.userLot;
+        if (p.activeTimeframe) window.GoldAI_Config.ACTIVE_TIMEFRAME = p.activeTimeframe;
          if (p.tradeMode) window.GoldAI_Config.TRADE_MODE = p.tradeMode;
          if (typeof p.autoTradingEnabled === 'boolean') window.GoldAI_Config.AUTO_TRADING_ENABLED = p.autoTradingEnabled;
         const el = (id) => document.getElementById(id);
         if (el('advCapital')) el('advCapital').value = p.capital || 10000;
          if (el('autoTradeToggle')) el('autoTradeToggle').checked = !!p.autoTradingEnabled;
+        this.syncAutoTradeSignalVisibility();
         if (el('advRisk')) el('advRisk').value = p.risk || 1;
-        if (el('strategySelect')) el('strategySelect').value = p.strategy || 'scalp';
         if (el('userTpCount')) el('userTpCount').value = p.tpCount || 3;
         if (el('userSlMult')) el('userSlMult').value = p.slMult || 1.5;
         if (el('userTp1Mult')) el('userTp1Mult').value = p.tp1Mult || 2.0;
@@ -539,36 +799,131 @@ window.GoldAI = {
       }
       const symbolEl = document.getElementById("symbolSelect");
       if (symbolEl) symbolEl.value = window.GoldAI_Config.SYMBOL || "XAU/USD";
+      const activeTf = window.GoldAI_Config.ACTIVE_TIMEFRAME || "m5";
+      window.GoldAI_Config.STRATEGY_MODE = ["h1", "h4"].includes(activeTf) ? "swing" : "scalp";
+      const tfSel = document.getElementById("activeTimeframeSelect");
+      if (tfSel) tfSel.value = activeTf;
+      const btLabel = document.getElementById("btActiveTfLabel");
+      if (btLabel) btLabel.value = activeTf;
+      // Mobile-First patch: same sync as setActiveTimeframe(), for correct
+      // button/label state on first paint before any click happens.
+      document.querySelectorAll(".tf-touch-btn").forEach(b => {
+        b.classList.toggle("active", b.dataset.tf === activeTf);
+      });
+      const chartTfLabel = document.getElementById("chartTfLabel");
+      if (chartTfLabel) chartTfLabel.textContent = activeTf.toUpperCase();
       this.updateRiskUI();
     } catch (e) { console.error(e); }
   },
 
   updatePriceUI() {
+    const data = window.GoldAI_Data;
+    const price = data.goldPrice;
     const el = document.getElementById("goldPrice");
-    if (el) el.textContent = window.GoldAI_Data.goldPrice
-      ? window.GoldAI_Data.goldPrice.toFixed(this.getDecimals())
-      : "—";
+    if (el) el.textContent = price ? price.toFixed(this.getDecimals()) : "—";
+
     const badge = document.getElementById("dataModeBadge");
+    const badgeText = document.getElementById("dataModeBadgeText");
     if (badge) {
-      const mode = (window.GoldAI_Data.dataMode || "demo").toLowerCase();
-      badge.className = "data-mode " + mode;
-      if (mode === "live") badge.textContent = "LIVE";
-      else if (mode === "offline") badge.textContent = "MT5 OFFLINE";
-      else if (mode === "mixed") badge.textContent = "MIXED";
-      else badge.textContent = "DEMO";
+      const mode = (data.dataMode || "demo").toLowerCase();
+      badge.className = "live-pill " + (mode === "live" ? "" : mode === "offline" ? "offline" : mode === "mixed" ? "mixed" : "demo");
+      if (badgeText) badgeText.textContent = mode === "live" ? "LIVE" : mode === "offline" ? "OFFLINE" : mode === "mixed" ? "MIXED" : "DEMO";
+    }
+
+    // Cosmetic change indicator only (vs. this session's first known M5 close) — not used by any trading/signal logic.
+    const changeEl = document.getElementById("priceChangeText");
+    if (changeEl) {
+      const series = data.closes && data.closes.m5;
+      const base = series && series.length ? series[0] : null;
+      if (price && base && base > 0) {
+        const diff = price - base;
+        const pct = (diff / base) * 100;
+        const decs = this.getDecimals();
+        const sign = diff > 0 ? "+" : "";
+        changeEl.textContent = `${sign}${diff.toFixed(decs)} (${sign}${pct.toFixed(2)}%)`;
+        changeEl.className = "price-change " + (diff > 0 ? "up" : diff < 0 ? "down" : "flat");
+      } else {
+        changeEl.textContent = "—";
+        changeEl.className = "price-change flat";
+      }
+    }
+
+    const sub = document.getElementById("symbolSub");
+    if (sub) {
+      const names = {
+        "XAU/USD": "Gold / US Dollar", "EUR/USD": "Euro / US Dollar", "GBP/USD": "British Pound / US Dollar",
+        "USD/JPY": "US Dollar / Japanese Yen", "AUD/USD": "Australian Dollar / US Dollar",
+        "USD/CAD": "US Dollar / Canadian Dollar", "GBP/JPY": "British Pound / Japanese Yen", "EUR/JPY": "Euro / Japanese Yen"
+      };
+      sub.textContent = names[(window.GoldAI_Config.SYMBOL || "XAU/USD").toUpperCase()] || "";
     }
   },
 
+  toggleNotificationsPanel() {
+    const box = document.getElementById("notifDropdown");
+    if (box) box.classList.toggle("hidden");
+    const dot = document.getElementById("notifDot");
+    if (dot && box && !box.classList.contains("hidden")) dot.classList.add("hidden"); // mark as read on open
+  },
+
+  onBacktestRangeChange() {
+    const sel = document.getElementById("btRangePreset");
+    const wrap = document.getElementById("btCustomRangeWrap");
+    if (wrap) wrap.classList.toggle("hidden", !sel || sel.value !== "custom");
+    const err = document.getElementById("btRangeError");
+    if (err) err.classList.add("hidden");
+  },
+
+  setActiveTimeframe(tf) {
+    tf = String(tf || "m5").toLowerCase();
+    if (!["m1", "m5", "m15", "m30", "h1", "h4"].includes(tf)) tf = "m5";
+    window.GoldAI_Config.ACTIVE_TIMEFRAME = tf;
+    window.GoldAI_Config.STRATEGY_MODE = ["h1", "h4"].includes(tf) ? "swing" : "scalp"; // derived, informational only
+    try {
+      const stored = JSON.parse(localStorage.getItem("goldai_settings") || "{}");
+      stored.activeTimeframe = tf;
+      delete stored.scalpEntryTf; delete stored.strategy; // superseded by activeTimeframe
+      localStorage.setItem("goldai_settings", JSON.stringify(stored));
+    } catch (_) {}
+    const sel = document.getElementById("activeTimeframeSelect");
+    if (sel) sel.value = tf;
+    const btLabel = document.getElementById("btActiveTfLabel");
+    if (btLabel) btLabel.value = tf;
+    // Mobile-First patch: sync the touch-friendly TF buttons + chart label.
+    // Same tf value already used above — no new state introduced.
+    document.querySelectorAll(".tf-touch-btn").forEach(b => {
+      b.classList.toggle("active", b.dataset.tf === tf);
+    });
+    const chartTfLabel = document.getElementById("chartTfLabel");
+    if (chartTfLabel) chartTfLabel.textContent = tf.toUpperCase();
+    // Server source of truth for Worker ACTIVE_TIMEFRAME (Auto Trading 24/7)
+    fetch(`${this.backendURL}/mt5/trading-state`, {
+      method: "POST",
+      headers: this.apiAuthHeaders(),
+      body: JSON.stringify({ activeTimeframe: tf.toUpperCase() })
+    }).catch(e => console.warn("trading-state activeTimeframe sync failed:", e.message));
+    this.analyze();
+  },
+
+  /**
+   * NOTE on lot display: there is still only ONE computed lot value in the
+   * app — GoldAI_Trade.createTradePlan()'s plan, stored on lastResult.lot,
+   * which feeds the "اجرای معامله" execution panel's Lot field exactly as
+   * before. The Dashboard's compact risk strip (below) now also *displays*
+   * that same value read-only, via #dashSuggestedLot in render() — this is
+   * the current reference layout's explicit 4th field (Capital/Risk/Max
+   * Loss/Suggested Lot). It is a read of the existing plan, not a second
+   * calculation, so it cannot drift from the execution panel's value.
+   */
   updateRiskUI() {
     const cap = window.GoldAI_Data.getCapital();
     const risk = window.GoldAI_Config.DEFAULT_RISK_PERCENT;
     const maxLoss = ((cap * risk) / 100).toFixed(2);
-    const lot = (window._lastResult && Number(window._lastResult.lot) > 0) ? Number(window._lastResult.lot) : 0.01;
     const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
     set('capitalText', cap);
     set('riskText', risk + "%");
     set('maxLossText', maxLoss);
-    set('lotText', lot);
+    set('maxLossTextDash', maxLoss); // dashboard compact-strip mirror of the same value
 
     // Risk Guard status panel
     try {
@@ -576,28 +931,29 @@ window.GoldAI = {
         const st = window.GoldAI_RiskGuard.getStatus(window.GoldAI_Config);
         const maxT = st.maxTrades || 5;
         const trades = st.trades || 0;
+        const dailyLimit = st.dailyLossLimitPct || 3;
+        const realizedR = st.realizedR != null ? st.realizedR : 0;
         set('rgTrades', trades + ' / ' + maxT);
-        set('rgRealizedR', (st.realizedR != null ? st.realizedR : 0) + 'R');
-        set('rgDailyLimit', (st.dailyLossLimitPct || 3) + 'R');
-        const badge = document.getElementById('riskGuardBadge');
-        const statusEl = document.getElementById('rgStatus');
-        if (!st.allowed) {
-          if (badge) { badge.className = 'rg-badge rg-blocked'; badge.textContent = '🔴 مسدود'; }
-          if (statusEl) statusEl.textContent = st.reason || 'مسدود';
-        } else {
-          if (badge) { badge.className = 'rg-badge rg-ok'; badge.textContent = '🟢 فعال'; }
-          if (statusEl) statusEl.textContent = 'آماده';
+        set('rgDailyLimit', dailyLimit + 'R');
+        set('rgRealizedRValue', realizedR);
+
+        // Progress bar = how much of today's loss budget has been used (0–100%).
+        const usedPct = Math.min(100, Math.max(0, (Math.abs(Math.min(0, realizedR)) / dailyLimit) * 100));
+        const bar = document.getElementById('riskProgressBar');
+        if (bar) {
+          bar.style.width = usedPct + '%';
+          bar.style.background = usedPct >= 100 ? 'var(--red)' : usedPct >= 70 ? 'var(--yellow)' : 'var(--green)';
         }
 
-        // Pure UI: visualize existing trades/maxTrades ratio as a progress bar.
-        const pbar = document.getElementById('riskProgressBar');
-        const plabel = document.getElementById('riskProgressLabel');
-        const pct = maxT > 0 ? Math.min(100, Math.round((trades / maxT) * 100)) : 0;
-        if (pbar) {
-          pbar.style.width = pct + '%';
-          pbar.style.background = pct >= 90 ? 'var(--red)' : pct >= 60 ? 'var(--gold)' : 'var(--green)';
+        const badge = document.getElementById('riskGuardBadge');
+        const hintEl = document.getElementById('rgStatusHint');
+        if (!st.allowed) {
+          if (badge) { badge.className = 'rg-badge rg-blocked'; badge.textContent = '🔴 مسدود'; }
+          if (hintEl) hintEl.title = 'مسدود: ' + (st.reason || 'Risk Guard');
+        } else {
+          if (badge) { badge.className = 'rg-badge rg-ok'; badge.textContent = '🛡️ ریسک فعال'; }
+          if (hintEl) hintEl.title = 'Risk Guard فعال — آماده صدور سیگنال جدید';
         }
-        if (plabel) plabel.textContent = pct + '%';
       }
     } catch (_) {}
   },
@@ -633,25 +989,17 @@ window.GoldAI = {
       else warning.classList.remove("hidden");
     }
 
-    const td = document.getElementById("timeDisplay");
-    if (td) {
+    const dateEl = document.getElementById("persianDate");
+    const timeEl = document.getElementById("persianTime");
+    if (dateEl || timeEl) {
       try {
-        const zones = [
-          { name: "تهران", tz: "Asia/Tehran" },
-          { name: "لندن", tz: "Europe/London" },
-          { name: "نیویورک", tz: "America/New_York" },
-          { name: "توکیو", tz: "Asia/Tokyo" }
-        ];
-        const clocksHTML = zones.map(z => {
-          const opt = { timeZone: z.tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
-          const f = new Intl.DateTimeFormat('fa-IR', opt).format(now);
-          return `<span><b>${z.name}</b> ${f}</span>`;
-        }).join('');
+        // Tehran only — per UI spec, no London/New York/Tokyo clocks.
         const dateOpt = { timeZone: 'Asia/Tehran', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-        const persianDate = new Intl.DateTimeFormat('fa-IR', dateOpt).format(now);
-        td.innerHTML = `<div class="date-row">${persianDate}</div><div class="clocks">${clocksHTML}</div>`;
+        const timeOpt = { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+        if (dateEl) dateEl.textContent = new Intl.DateTimeFormat('fa-IR', dateOpt).format(now);
+        if (timeEl) timeEl.textContent = new Intl.DateTimeFormat('fa-IR', timeOpt).format(now);
       } catch (e) {
-        td.textContent = now.toUTCString();
+        if (timeEl) timeEl.textContent = now.toUTCString();
       }
     }
     this.updateRiskUI();

@@ -34,3 +34,14 @@ build/
 temp/
 __pycache__/
 __pycache__/ 
+
+# Runtime data, backups and research data (kept on the server only)
+backups/
+backend/data/
+backend/worker/data/
+backend/worker/logs/
+Claude outputs/*.json
+Claude outputs/candles/
+Claude outputs/*.zip
+Claude outputs/*.png
+*.bak

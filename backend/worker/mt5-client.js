@@ -37,4 +37,15 @@ async function symbolInfo(symbol) {
   return res.data;
 }
 
-module.exports = { BRIDGE_URL, DEFAULT_SYMBOL, health, currentPrice, candles, symbolInfo };
+// ADDED 2026-10-08 (trailing stop)
+async function positions() {
+  const res = await axios.get(`${BRIDGE_URL}/positions`, { timeout: 5000 });
+  return res.data;
+}
+
+async function modifySL(ticket, sl) {
+  const res = await axios.post(`${BRIDGE_URL}/modify-sl`, { ticket, sl }, { timeout: 8000, validateStatus: () => true });
+  return res.data;
+}
+
+module.exports = { BRIDGE_URL, DEFAULT_SYMBOL, health, currentPrice, candles, symbolInfo, positions, modifySL };

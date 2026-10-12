@@ -406,6 +406,35 @@ def execute_trade():
     except (TypeError, ValueError):
         return jsonify({"status": "ERROR", "message": "invalid SL/TP"})
 
+    # --- Gate 3: real MT5/broker tradeable-state check, BEFORE order_send ---
+    # Uses the symbol's own live trade_mode from MT5 — never a fixed clock —
+    # and fails CLOSED (blocks the trade) for DISABLED, CLOSEONLY, and any
+    # value this code doesn't explicitly recognize as tradeable.
+    trade_mode = getattr(info, "trade_mode", None)
+    MODE_DISABLED = getattr(mt5, "SYMBOL_TRADE_MODE_DISABLED", 0)
+    MODE_LONGONLY = getattr(mt5, "SYMBOL_TRADE_MODE_LONGONLY", 1)
+    MODE_SHORTONLY = getattr(mt5, "SYMBOL_TRADE_MODE_SHORTONLY", 2)
+    MODE_CLOSEONLY = getattr(mt5, "SYMBOL_TRADE_MODE_CLOSEONLY", 3)
+    MODE_FULL = getattr(mt5, "SYMBOL_TRADE_MODE_FULL", 4)
+    KNOWN_MODES = (MODE_DISABLED, MODE_LONGONLY, MODE_SHORTONLY, MODE_CLOSEONLY, MODE_FULL)
+
+    if trade_mode is None or trade_mode not in KNOWN_MODES:
+        # Unrecognized/undeterminable trade_mode — fail closed, never assume tradeable.
+        return jsonify({"status": "MARKET_NOT_TRADEABLE", "executionState": "MARKET_NOT_TRADEABLE",
+                         "message": f"symbol {symbol} trade_mode could not be determined — blocked (fail-closed)"})
+    if trade_mode == MODE_DISABLED:
+        return jsonify({"status": "MARKET_CLOSED", "executionState": "MARKET_CLOSED",
+                         "message": f"symbol {symbol} trading is disabled (market closed)"})
+    if trade_mode == MODE_CLOSEONLY:
+        return jsonify({"status": "MARKET_CLOSED", "executionState": "MARKET_CLOSED",
+                         "message": f"symbol {symbol} is close-only right now — no new positions"})
+    if trade_mode == MODE_LONGONLY and not side_buy:
+        return jsonify({"status": "MARKET_NOT_TRADEABLE", "executionState": "MARKET_NOT_TRADEABLE",
+                         "message": f"symbol {symbol} is long-only right now — SELL blocked"})
+    if trade_mode == MODE_SHORTONLY and side_buy:
+        return jsonify({"status": "MARKET_NOT_TRADEABLE", "executionState": "MARKET_NOT_TRADEABLE",
+                         "message": f"symbol {symbol} is short-only right now — BUY blocked"})
+
     # Use a filling mode accepted by this symbol instead of assuming IOC.
     filling = getattr(info, "filling_mode", None)
     if filling in (getattr(mt5, "ORDER_FILLING_FOK", -1), getattr(mt5, "ORDER_FILLING_IOC", -2), getattr(mt5, "ORDER_FILLING_RETURN", -3)):
@@ -424,6 +453,11 @@ def execute_trade():
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": type_filling,
     }
+    # Tag the order with clientOrderId so a later reconciliation lookup (see
+    # /reconcile-order) can find it in MT5's own history/positions by comment
+    # — this is what makes UNKNOWN resolvable without guessing.
+    if client_id:
+        request_order["comment"] = client_id[:31]  # MT5 comment field is capped ~31 chars
     if sl_f is not None:
         request_order["sl"] = sl_f
     if tp_f is not None:
@@ -449,6 +483,110 @@ def execute_trade():
     return jsonify(out)
 
 
+@app.get("/reconcile-order")
+def reconcile_order():
+    """Read-only lookup: was there ever an MT5 deal/position tagged with this
+    clientOrderId? This endpoint NEVER calls mt5.order_send() or places any
+    order — it only reads MT5's own history/positions to resolve an UNKNOWN
+    execution outcome (e.g. after a timeout) without guessing and without
+    retrying. Matches by the comment field set in execute_trade() above."""
+    client_id = str(request.args.get("clientOrderId") or "").strip()
+    if not client_id:
+        return jsonify({"found": None, "message": "clientOrderId is required"}), 400
+
+    ok, msg = ensure_connected()
+    if not ok:
+        # Cannot determine anything right now — caller must keep this UNKNOWN
+        # and retry reconciliation later; this is NOT "found: false".
+        return jsonify({"found": None, "message": f"MT5 not connected: {msg}"}), 503
+
+    mt5 = try_import_mt5()
+    tag = client_id[:31]
+    details = None
+    found = False
+
+    try:
+        # Check currently open positions first (order may have filled and
+        # still be an open position).
+        positions = mt5.positions_get() or ()
+        for p in positions:
+            if getattr(p, "comment", "") == tag:
+                found = True
+                details = {"source": "position", "ticket": p.ticket, "symbol": p.symbol,
+                            "volume": p.volume, "price_open": p.price_open, "type": p.type}
+                break
+
+        # Then check recent deal history (covers filled-and-since-closed too).
+        if not found:
+            since = datetime.fromtimestamp(time.time() - 7 * 24 * 3600)
+            until = datetime.fromtimestamp(time.time() + 60)
+            deals = mt5.history_deals_get(since, until) or ()
+            for d in deals:
+                if getattr(d, "comment", "") == tag:
+                    found = True
+                    details = {"source": "history_deal", "ticket": d.ticket, "order": d.order,
+                                "symbol": d.symbol, "volume": d.volume, "price": d.price, "time": d.time}
+                    break
+    except Exception as e:
+        # An error during lookup is itself inconclusive — never report False
+        # (which would incorrectly unstick an UNKNOWN into FAILED upstream).
+        return jsonify({"found": None, "message": f"reconciliation lookup error: {e}"}), 502
+
+    return jsonify({"found": found, "details": details})
+
+
+
+@app.get("/daily-pnl")
+def daily_pnl():
+    """Authoritative day P/L from MT5 (closed deals since UTC midnight + floating).
+    Read-only. Backend Risk Guard must fail-closed if status != ok.
+    """
+    ok, msg = ensure_connected()
+    if not ok:
+        return jsonify({"status": "unavailable", "message": msg or "MT5 offline"})
+    mt5 = try_import_mt5()
+    if mt5 is None:
+        return jsonify({"status": "unavailable", "message": "MetaTrader5 package not available"})
+    try:
+        import time as _time
+        import calendar
+        now = _time.time()
+        gm = _time.gmtime(now)
+        day_start = calendar.timegm((gm.tm_year, gm.tm_mon, gm.tm_mday, 0, 0, 0, gm.tm_wday, gm.tm_yday, 0))
+        until = int(now) + 60
+        closed = 0.0
+        deal_count = 0
+        deals = mt5.history_deals_get(day_start, until) or ()
+        for d in deals:
+            pr = float(getattr(d, "profit", 0) or 0)
+            swap = float(getattr(d, "swap", 0) or 0)
+            commission = float(getattr(d, "commission", 0) or 0)
+            closed += pr + swap + commission
+            deal_count += 1
+        floating = 0.0
+        pos_count = 0
+        positions = mt5.positions_get() or ()
+        for pos in positions:
+            floating += float(getattr(pos, "profit", 0) or 0)
+            pos_count += 1
+        total = closed + floating
+        acc = mt5.account_info()
+        return jsonify({
+            "status": "ok",
+            "dayStartEpoch": day_start,
+            "closedPnL": round(closed, 2),
+            "floatingPnL": round(floating, 2),
+            "totalPnL": round(total, 2),
+            "dealCount": deal_count,
+            "openPositions": pos_count,
+            "balance": float(acc.balance) if acc else None,
+            "equity": float(acc.equity) if acc else None,
+            "currency": getattr(acc, "currency", None) if acc else None
+        })
+    except Exception as e:
+        return jsonify({"status": "unavailable", "message": str(e)})
+
+
 @app.get("/positions")
 def positions():
     ok, msg = ensure_connected()
@@ -464,9 +602,142 @@ def positions():
             "ticket": p.ticket, "symbol": p.symbol,
             "type": "BUY" if p.type == 0 else "SELL",
             "volume": p.volume, "price_open": p.price_open,
-            "sl": p.sl, "tp": p.tp, "profit": p.profit
+            "sl": p.sl, "tp": p.tp, "profit": p.profit,
+            # ADDED 2026-10-08 (read-only extra fields, used by the trailing stop)
+            "magic": getattr(p, "magic", None), "comment": getattr(p, "comment", ""),
+            "time": getattr(p, "time", None)
         })
     return jsonify({"positions": out, "count": len(out), "status": "ok"})
+
+
+GOLDAI_MAGIC = 20250817
+
+
+@app.post("/modify-sl")
+def modify_sl():
+    """ADDED 2026-10-08 — trailing stop. Moves the stop-loss of ONE open GoldAI
+    position (magic 20250817). Safety rules, all checked here in the bridge:
+      - only positions opened by GoldAI (same magic number) can be changed;
+      - the stop can only move TOWARD profit (tighter), never further away;
+      - the stop must stay on the correct side of the live price and respect
+        the broker's minimum stop distance;
+      - take-profit is kept as it is unless a valid new one is given.
+    It never opens or closes a position."""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        ticket = int(data.get("ticket"))
+        new_sl = float(data.get("sl"))
+    except (TypeError, ValueError):
+        return jsonify({"status": "ERROR", "message": "ticket and sl are required"}), 400
+    new_tp = data.get("tp")
+
+    ok, msg = ensure_connected()
+    if not ok:
+        return jsonify({"status": "DISCONNECTED", "message": msg})
+    mt5 = try_import_mt5()
+    found = mt5.positions_get(ticket=ticket)
+    if not found:
+        return jsonify({"status": "NOT_FOUND", "message": f"position {ticket} is not open"})
+    p = found[0]
+    if int(getattr(p, "magic", 0) or 0) != GOLDAI_MAGIC:
+        return jsonify({"status": "REJECTED", "message": "not a GoldAI position (magic differs)"})
+
+    info = mt5.symbol_info(p.symbol)
+    tick = mt5.symbol_info_tick(p.symbol)
+    if info is None or tick is None:
+        return jsonify({"status": "ERROR", "message": "no symbol info / tick"})
+    digits = int(getattr(info, "digits", 2) or 2)
+    point = float(getattr(info, "point", 0) or 0)
+    min_dist = float(getattr(info, "trade_stops_level", 0) or 0) * point
+    is_buy = p.type == 0
+    new_sl = round(new_sl, digits)
+    cur_sl = float(p.sl or 0)
+
+    # tighter only
+    if cur_sl > 0:
+        if is_buy and new_sl <= cur_sl:
+            return jsonify({"status": "REJECTED", "message": "new SL is not higher than current SL (BUY)"})
+        if (not is_buy) and new_sl >= cur_sl:
+            return jsonify({"status": "REJECTED", "message": "new SL is not lower than current SL (SELL)"})
+    # correct side of the live price (BUY closes at bid, SELL closes at ask)
+    if is_buy and new_sl >= tick.bid - min_dist:
+        return jsonify({"status": "REJECTED", "message": "SL too close to / above the bid"})
+    if (not is_buy) and new_sl <= tick.ask + min_dist:
+        return jsonify({"status": "REJECTED", "message": "SL too close to / below the ask"})
+
+    tp_val = float(p.tp or 0)
+    if new_tp not in (None, ""):
+        try:
+            t = round(float(new_tp), digits)
+        except (TypeError, ValueError):
+            return jsonify({"status": "ERROR", "message": "invalid tp"})
+        if is_buy and t <= tick.bid + min_dist:
+            return jsonify({"status": "REJECTED", "message": "TP on wrong side (BUY)"})
+        if (not is_buy) and t >= tick.ask - min_dist:
+            return jsonify({"status": "REJECTED", "message": "TP on wrong side (SELL)"})
+        tp_val = t
+
+    req = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "position": ticket,
+        "symbol": p.symbol,
+        "sl": new_sl,
+        "tp": tp_val,          # MT5 needs both; sending the current TP keeps it unchanged
+        "magic": GOLDAI_MAGIC,
+    }
+    result = mt5.order_send(req)
+    if result is None:
+        return jsonify({"status": "ERROR", "message": str(mt5.last_error())})
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        return jsonify({"status": "ERROR", "retcode": result.retcode, "message": result.comment})
+    return jsonify({"status": "OK", "ticket": ticket, "sl": new_sl, "tp": tp_val, "previousSl": cur_sl})
+
+
+@app.post("/close-position")
+def close_position():
+    """ADDED 2026-10-09 — closes ONE open GoldAI position (magic 20250817) at market.
+    Used only for the 8-hour limit of short (M5) trades. Never opens anything."""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        ticket = int(data.get("ticket"))
+    except (TypeError, ValueError):
+        return jsonify({"status": "ERROR", "message": "ticket is required"}), 400
+    ok, msg = ensure_connected()
+    if not ok:
+        return jsonify({"status": "DISCONNECTED", "message": msg})
+    mt5 = try_import_mt5()
+    found = mt5.positions_get(ticket=ticket)
+    if not found:
+        return jsonify({"status": "NOT_FOUND", "message": f"position {ticket} is not open"})
+    p = found[0]
+    if int(getattr(p, "magic", 0) or 0) != GOLDAI_MAGIC:
+        return jsonify({"status": "REJECTED", "message": "not a GoldAI position (magic differs)"})
+    tick = mt5.symbol_info_tick(p.symbol)
+    if tick is None:
+        return jsonify({"status": "ERROR", "message": "no tick"})
+    is_buy = p.type == 0
+    base = {
+        "action": mt5.TRADE_ACTION_DEAL, "position": ticket, "symbol": p.symbol, "volume": p.volume,
+        "type": mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY,
+        "price": tick.bid if is_buy else tick.ask, "deviation": 30, "magic": GOLDAI_MAGIC,
+        "comment": "GoldAI 8h limit", "type_time": mt5.ORDER_TIME_GTC,
+    }
+    last = None
+    # try the filling modes one by one (brokers accept different ones)
+    for name in ("ORDER_FILLING_IOC", "ORDER_FILLING_FOK", "ORDER_FILLING_RETURN"):
+        fill = getattr(mt5, name, None)
+        if fill is None:
+            continue
+        req = dict(base); req["type_filling"] = fill
+        result = mt5.order_send(req)
+        last = result
+        if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+            return jsonify({"status": "CLOSED", "ticket": ticket, "price": result.price})
+        if result is not None and result.retcode != 10030:   # 10030 = filling mode not supported -> try next
+            break
+    if last is None:
+        return jsonify({"status": "ERROR", "message": str(mt5.last_error())})
+    return jsonify({"status": "ERROR", "retcode": last.retcode, "message": last.comment})
 
 
 if __name__ == "__main__":

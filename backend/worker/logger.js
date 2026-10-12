@@ -8,6 +8,11 @@ const LOG_FILE = path.join(LOG_DIR, "worker.log");
 const MAX_BYTES = 5 * 1024 * 1024; // rotate at ~5MB
 const KEEP_ROTATED = 3;
 
+try {
+  if (process.stdout) process.stdout.on("error", () => {});
+  if (process.stderr) process.stderr.on("error", () => {});
+} catch (_) {}
+
 function ensureDir() {
   if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
 }
@@ -30,8 +35,10 @@ function rotateIfNeeded() {
 function line(tag, msg) {
   const ts = new Date().toISOString();
   const text = `[${ts}] [${tag}] ${msg}`;
-  // eslint-disable-next-line no-console
-  console.log(text);
+  try {
+    // Detached Windows service/VBS has no console → console.log throws EPIPE
+    console.log(text);
+  } catch (_) { /* ignore closed stdout */ }
   try {
     rotateIfNeeded();
     ensureDir();

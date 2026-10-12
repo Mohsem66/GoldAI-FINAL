@@ -1,0 +1,302 @@
+می‌خواهم فقط رابط کاربری (UI/UX) داشبورد GoldAI را بر اساس تصویر مرجع پیوست‌شده اصلاح کنی.
+
+این تصویر مرجع، طرح نهایی موردنظر من برای صفحه اصلی موبایل است.
+لطفاً ظاهر فعلی پروژه را تا حد ممکن حفظ کن و فقط تغییرات زیر را انجام بده.
+
+========================
+هدف اصلی
+========================
+
+Dashboard باید Mobile-First، خلوت، تمیز و حرفه‌ای باشد.
+
+در تصویر فعلی دو کادر زیر در پایین Dashboard وجود دارند:
+
+1. Indicator Analysis
+2. Signal Explanation
+
+این دو کادر را از صفحه اصلی Dashboard کاملاً خارج کن.
+
+اما توجه بسیار مهم:
+
+این دو بخش نباید حذف یا نابود شوند.
+محتوای آن‌ها باید همچنان در بخش‌های مربوط به Bottom Navigation قابل دسترسی باشد:
+
+- Indicator Analysis → داخل تب Analysis
+- Signal Explanation → داخل تب Signal
+
+یعنی فقط از صفحه اصلی Dashboard برداشته شوند و به صفحات/تب‌های مربوط به خودشان منتقل یا نمایش داده شوند.
+
+========================
+Dashboard نهایی باید شامل این موارد باشد
+========================
+
+1. Header
+- لوگوی GoldAI
+- عنوان GoldAI
+- زیرعنوان Smart Trading, Better Results
+- SYSTEM ON/OFF بزرگ و کاملاً واضح
+- رنگ سبز برای ON
+- رنگ قرمز برای OFF
+- یک Settings Gear
+
+2. XAUUSD Price Card
+- XAUUSD
+- Gold
+- قیمت زنده
+- درصد تغییر
+- Market Open/Closed
+- Tehran / Iran
+- تاریخ و ساعت تهران
+
+3. Signal Strength
+- Gauge نیم‌دایره‌ای
+- درصد قدرت سیگنال
+- وضعیت Strong / Medium / Weak
+
+4. Current Signal
+- BUY / SELL / WAIT
+- Confidence
+- Signal Time
+- Trade Executed / Not Executed
+
+5. Trading Controls
+دکمه‌های بزرگ و قابل لمس:
+- MANUAL
+- AUTO
+- BUY
+- SELL
+
+6. Timeframe
+- فقط یک کنترل کوچک و تمیز برای Timeframe
+- به صورت Dropdown / Select
+- مثلاً:
+  H1 ▼
+- با باز شدن Dropdown تایم‌فریم‌ها نمایش داده شوند:
+  M1 / M5 / M15 / M30 / H1 / H4 / D1
+- تایم‌فریم‌ها به صورت چند دکمه بزرگ روی Dashboard نمایش داده نشوند.
+- Scalp / Swing نیز نباید باعث شلوغی صفحه شوند.
+
+7. Market Price
+- قیمت زنده
+- Live indicator
+- High
+- Low
+- Change
+
+========================
+مواردی که نباید در Dashboard اصلی باشند
+========================
+
+این موارد را از صفحه اصلی حذف کن:
+
+❌ Live Chart / نمودار بزرگ
+❌ Indicator Analysis
+❌ Signal Explanation
+❌ Risk / Management
+❌ Position Info
+❌ Backtest
+❌ جزئیات طولانی تحلیل
+
+این اطلاعات نباید حذف شوند؛ فقط باید از Dashboard خارج شوند و از Bottom Navigation قابل دسترسی باشند.
+
+========================
+Bottom Navigation
+========================
+
+Bottom Navigation را بزرگ‌تر، واضح‌تر و Mobile-Friendly طراحی کن.
+
+تب‌ها:
+
+Dashboard
+Chart
+Signal
+Analysis
+Risk
+Backtest
+Settings
+
+عملکرد:
+
+Dashboard
+→ صفحه اصلی خلوت و خلاصه
+
+Chart
+→ نمودار زنده کامل + کنترل‌های نمودار + Timeframe
+
+Signal
+→ Current Signal + Signal Explanation + دلیل BUY/SELL/WAIT
+
+Analysis
+→ Indicator Analysis کامل شامل RSI / MACD / EMA / Trend / Momentum و سایر تحلیل‌های موجود
+
+Risk
+→ Risk / Management + Position Info + SL / TP / Trailing / Break Even و اطلاعات مرتبط موجود
+
+Backtest
+→ تمام بخش Backtest و نتایج آن
+
+Settings
+→ تنظیمات موجود پروژه
+
+========================
+نکته بسیار مهم درباره رفتار فعلی پروژه
+========================
+
+Bottom Navigation و بخش‌های موجود پروژه را خراب نکن.
+
+اگر برای انتقال محتوا لازم است Section/Tab موجود را به Dashboard متصل کنی، فقط UI/Navigation را اصلاح کن.
+
+هیچ منطق معاملاتی جدیدی ایجاد نکن.
+
+========================
+STRICT SCOPE
+========================
+
+این کار فقط UI/UX است.
+
+به هیچ عنوان این موارد را تغییر نده:
+
+❌ MT5 Connection
+❌ MT5 Bridge
+❌ Backend
+❌ API Endpoints
+❌ Signal Engine
+❌ Auto Signal
+❌ Auto Trading Logic
+❌ Manual Trading Logic
+❌ Order Execution
+❌ Risk Guard Logic
+❌ SL/TP Calculation
+❌ Trailing Stop Logic
+❌ Break Even Logic
+❌ Candle Logic
+❌ Timeframe Calculation Logic
+❌ Indicator Calculation Logic
+❌ Backtest Calculation Logic
+❌ Firebase/Auth
+❌ Database
+❌ Server Configuration
+❌ Environment Variables
+
+فقط HTML/CSS/JS مربوط به نمایش، Layout، Navigation و Responsive UI را تغییر بده.
+
+========================
+طراحی ظاهری
+========================
+
+طراحی باید بسیار نزدیک به تصویر مرجع باشد:
+
+- Dark Premium
+- GoldAI branding
+- Gold accents
+- Emerald green برای وضعیت‌های مثبت
+- Red برای SELL/OFF
+- کارت‌های Rounded
+- Border ظریف
+- Glow بسیار کنترل‌شده
+- فونت خوانا و نسبتاً بزرگ
+- دکمه‌های لمسی بزرگ
+- Mobile-first
+- مناسب صفحه گوشی
+- بدون Horizontal Scroll
+- فاصله‌گذاری حرفه‌ای
+- Dashboard خلوت
+
+فضای خالی ایجادشده بعد از حذف Indicator Analysis و Signal Explanation را حفظ کن.
+
+آن فضای خالی را با کارت‌های جدید پر نکن.
+
+هدف این است که Dashboard واقعاً نفس داشته باشد و شلوغ نباشد.
+
+========================
+قانون مهم
+========================
+
+ظاهر Dashboard باید دقیقاً بر اساس تصویر مرجع باشد.
+
+یعنی:
+
+Header
+↓
+XAUUSD + Market + Tehran Time + Signal Strength
+↓
+Current Signal
+↓
+MANUAL / AUTO / BUY / SELL
+↓
+Timeframe Dropdown
+↓
+Market Price
+↓
+فضای آزاد
+↓
+Bottom Navigation
+
+هیچ Indicator Analysis یا Signal Explanation در این قسمت قرار نگیرد.
+
+========================
+Responsive
+========================
+
+اولویت اصلی گوشی است.
+
+در موبایل:
+- هیچ Horizontal Scroll وجود نداشته باشد.
+- کارت‌ها از عرض صفحه خارج نشوند.
+- Bottom Navigation قابل لمس باشد.
+- متن‌ها خوانا باشند.
+- دکمه‌ها خیلی کوچک نباشند.
+- فضای اضافی و شلوغی حذف شود.
+
+در Desktop نیز Responsive باقی بماند و UI خراب نشود.
+
+========================
+محدودیت فایل‌ها
+========================
+
+قبل از تغییر فایل‌ها بررسی کن که مسیر واقعی پروژه:
+
+C:\GoldAI-FINAL
+
+است.
+
+فایل‌های موجود را بی‌دلیل بازنویسی نکن.
+
+فایل‌های Backup، Git و فایل‌های پروژه را حذف نکن.
+
+========================
+Validation
+========================
+
+بعد از تغییرات:
+
+1. JavaScript syntax را بررسی کن.
+2. مطمئن شو هیچ Error واضح JavaScript ایجاد نشده.
+3. مطمئن شو Bottom Navigation کار می‌کند.
+4. مطمئن شو Chart از تب Chart قابل مشاهده است.
+5. مطمئن شو Signal Explanation داخل Signal قابل مشاهده است.
+6. مطمئن شو Indicator Analysis داخل Analysis قابل مشاهده است.
+7. مطمئن شو Risk/Position داخل Risk قابل مشاهده است.
+8. مطمئن شو Backtest همچنان قابل دسترسی است.
+9. مطمئن شو Settings کار می‌کند.
+10. مطمئن شو SYSTEM ON/OFF موجود و دست‌نخورده باقی مانده.
+11. مطمئن شو هیچ Horizontal Scroll در موبایل وجود ندارد.
+12. مطمئن شو هیچ قابلیت معاملاتی موجود پروژه تغییر نکرده است.
+
+========================
+گزارش نهایی
+========================
+
+بعد از اتمام کار فقط گزارش بده:
+
+- چه فایل‌هایی تغییر کردند؟
+- چه تغییر UI انجام شد؟
+- آیا Indicator Analysis از Dashboard خارج شد؟
+- آیا Signal Explanation از Dashboard خارج شد؟
+- آیا این دو بخش همچنان از Bottom Navigation قابل دسترسی هستند؟
+- آیا Chart فقط در تب Chart قرار دارد؟
+- آیا Backend / MT5 / Trading Logic تغییر کرده است؟
+
+فعلاً Commit یا Push به GitHub انجام نده.
+
+فقط تغییرات را انجام بده و نتیجه را گزارش کن.

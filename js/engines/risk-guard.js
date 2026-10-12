@@ -47,11 +47,11 @@ window.GoldAI_RiskGuard = {
    */
   check(cfg) {
     const state = this._load();
-    const maxTrades = (cfg && cfg.MAX_TRADES_PER_DAY) != null ? cfg.MAX_TRADES_PER_DAY : 5;
+    const maxTrades = (cfg && cfg.MAX_TRADES_PER_DAY) != null ? Number(cfg.MAX_TRADES_PER_DAY) : 0;
     const dailyLossPct = (cfg && cfg.DAILY_LOSS_LIMIT_PCT) != null ? cfg.DAILY_LOSS_LIMIT_PCT : 3;
 
-    // Max trades per day
-    if (state.trades >= maxTrades) {
+    // 0 / negative = unlimited (no daily trade cap)
+    if (maxTrades > 0 && state.trades >= maxTrades) {
       state.blocked = true;
       state.blockReason = "MAX_TRADES_PER_DAY (" + maxTrades + ")";
       this._save(state);
@@ -65,6 +65,13 @@ window.GoldAI_RiskGuard = {
       state.blockReason = "DAILY_LOSS_LIMIT (" + dailyLossPct + "% R)";
       this._save(state);
       return { allowed: false, reason: state.blockReason, state };
+    }
+
+    // Ignore a stale MAX_TRADES block if the cap is now disabled
+    if (state.blocked && state.blockReason && String(state.blockReason).indexOf("MAX_TRADES") === 0 && !(maxTrades > 0)) {
+      state.blocked = false;
+      state.blockReason = null;
+      this._save(state);
     }
 
     // Manual block flag
@@ -117,7 +124,7 @@ window.GoldAI_RiskGuard = {
       ...check.state,
       allowed: check.allowed,
       reason: check.reason || null,
-      maxTrades: (cfg && cfg.MAX_TRADES_PER_DAY) || 5,
+      maxTrades: Number(cfg && cfg.MAX_TRADES_PER_DAY) || 0,
       dailyLossLimitPct: (cfg && cfg.DAILY_LOSS_LIMIT_PCT) || 3
     };
   }

@@ -9,6 +9,7 @@ const WORKER_DATA_DIR = path.join(__dirname, "data");           // internal work
 const BACKEND_DATA_DIR = path.join(__dirname, "..", "data");    // C:\GoldAI\backend\data — where signals.json must live
 const STATE_FILE = path.join(WORKER_DATA_DIR, "state.json");        // last-processed candle per timeframe (dedup)
 const STATUS_FILE = path.join(WORKER_DATA_DIR, "status.json");      // worker health / heartbeat
+const CLUSTER_FILE = path.join(WORKER_DATA_DIR, "cluster.json");    // same-direction signal lock (survives restarts)
 const JOURNAL_FILE = path.join(BACKEND_DATA_DIR, "signals.json");   // backend/data/signals.json — persisted signals
 const JOURNAL_CAP = 5000;
 
@@ -27,11 +28,38 @@ function readJSON(file, fallback) {
   }
 }
 
+// Short blocking pause (used only between retries below).
+function pauseMs(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (_) {}
+}
+
 function writeJSONAtomic(file, data) {
   ensureDir(path.dirname(file));
   const tmp = file + ".tmp" + process.pid;
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-  fs.renameSync(tmp, file); // atomic on the same filesystem, including Windows NTFS
+  // ADDED 2026-10-07: on Windows the rename fails with EPERM/EBUSY/EACCES while
+  // another process (backend, antivirus, a file copy) has the target open for a
+  // moment. Retry a few times with short pauses instead of losing the write.
+  let lastErr = null;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      fs.renameSync(tmp, file); // atomic on the same filesystem, including Windows NTFS
+      return;
+    } catch (e) {
+      lastErr = e;
+      if (!e || !["EPERM", "EBUSY", "EACCES"].includes(e.code)) break;
+      pauseMs(100 * (attempt + 1));
+    }
+  }
+  // Last resort: copy over the target (not atomic, but keeps the data), then remove the temp file.
+  try {
+    fs.copyFileSync(tmp, file);
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    return;
+  } catch (_) {
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    throw lastErr;
+  }
 }
 
 // ---- state (dedup key per timeframe) ----------------------------------
@@ -42,6 +70,17 @@ function setLastCandle(timeframe, key) {
   const s = getState();
   s.lastCandle[timeframe] = key;
   writeJSONAtomic(STATE_FILE, s);
+}
+
+// ---- same-direction signal lock (trade-permission cluster state) --------
+// Persisted so a worker restart can no longer open a second trade in the
+// same move (this happened on 2026-10-05 after two restarts).
+function getCluster() {
+  return readJSON(CLUSTER_FILE, null);
+}
+function setCluster(snapshot) {
+  if (!snapshot) return;
+  writeJSONAtomic(CLUSTER_FILE, snapshot);
 }
 
 // ---- status / heartbeat -------------------------------------------------
@@ -81,8 +120,9 @@ function clearJournal() {
 }
 
 module.exports = {
-  WORKER_DATA_DIR, BACKEND_DATA_DIR, STATE_FILE, STATUS_FILE, JOURNAL_FILE,
+  WORKER_DATA_DIR, BACKEND_DATA_DIR, STATE_FILE, STATUS_FILE, JOURNAL_FILE, CLUSTER_FILE,
   getState, setLastCandle,
+  getCluster, setCluster,
   getStatus, setStatus,
   appendSignal, getJournal, clearJournal,
 };

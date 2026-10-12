@@ -1,0 +1,26 @@
+ROOT CAUSE
+After swing pattern HH+LL sets trend=VOLATILE and regime=RANGE, Bearish BOS only adds sellScore/reason; it never updates trend/regime. Exceptional HTF path requires structure.trend BULLISH|BEARISH, so VOLATILE fails → hard HTF_WEAK WAIT despite edge≈29 and BOS.
+
+CURRENT FLOW (this sample)
+HH+LL → structure RANGE / trend VOLATILE
+Bearish BOS str 0.482% → scores only
+ADX TREND + structure RANGE → marketRegime TRANSITION
+Score → high edge SELL, seedConf 59
+HTF NEUTRAL/WEAK → htfAlign WEAK or strength WEAK
+exceptional false (trend not BULLISH/BEARISH) → HTF_WEAK WAIT
+Permission not the reject (conf stayed 59)
+
+WHY SAMPLE FAILS
+Mismatch: directional BOS + ADX TREND + EMA stack vs structure still classified RANGE/VOLATILE for regime/exceptional gates.
+
+MINIMAL FIX
+market-structure.js only: after BOS validated with existing minBreak, set trend=bosDir and regime=TREND if was RANGE/NEUTRAL/UNKNOWN. No threshold changes.
+
+EXPECTED AFTER FIX
+structure.trend=BEARISH, structure.regime=TREND
+marketRegime: ADX TREND + st TREND → TREND
+exceptional can apply → soft -18 not hard HTF_WEAK (may still hit floor later)
+True range without BOS unchanged.
+
+MUST NOT CHANGE
+MIN_CONFIDENCE, AUTO_MIN_CONFIDENCE, ADX thresholds, MIN_BREAK_STRENGTH, strongBos 0.30, HTF penalties, Risk/execution, RANGE Architecture LH-HL NEUTRAL logic beyond BOS upgrade.

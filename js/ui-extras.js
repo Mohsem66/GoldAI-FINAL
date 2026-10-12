@@ -73,45 +73,79 @@
       };
     }
 
+    // 2026-10-07: settings sheet redesigned (mobile bottom-sheet, grouped sections).
+    // - TP2/TP3 live only here (manual mode); the dashboard card shows TP1 only.
+    // - Trade mode is shown read-only: it is changed only by the MANUAL/AUTO buttons,
+    //   which tell the server. (The old select changed it in this page only.)
     G.openSettingsModal = function () {
       var cfg = window.GoldAI_Config || {};
       var cap = (D.getCapital && D.getCapital()) || 10000;
       var old = document.getElementById("settingsModal");
       if (old) old.remove();
       var sel = function (cur, v) { return String(cur) === String(v) ? " selected" : ""; };
+      var r = G.lastResult || {};
+      var decs = (G.getDecimals && G.getDecimals()) || 2;
+      var fmt = function (n) { return (n == null || n === "" || isNaN(Number(n))) ? "—" : Number(n).toFixed(decs); };
+      var side = String(r.signal || "").toUpperCase();
+      var hasSig = side.indexOf("BUY") >= 0 || side.indexOf("SELL") >= 0;
+      var mode = (G._serverTradeMode || cfg.TRADE_MODE) === "auto" ? "auto" : "manual";
+      var num = function (id, label, val, attrs, hint) {
+        return '<label class="sm-field"><span class="sm-label">' + label + '</span>' +
+          '<input type="number" inputmode="decimal" id="' + id + '" value="' + val + '" ' + attrs + '>' +
+          (hint ? '<small class="sm-hint">' + hint + '</small>' : '') + '</label>';
+      };
       var html =
-        '<div id="settingsModal" class="modal-backdrop" onclick="if(event.target.id===\'settingsModal\')GoldAI.closeSettingsModal()">' +
-        '<div class="modal-sheet" onclick="event.stopPropagation()">' +
-        '<div class="modal-head"><h3>⚙️ تنظیمات پروژه</h3>' +
-        '<button type="button" class="btn-icon" onclick="GoldAI.closeSettingsModal()">✕</button></div>' +
-        '<div class="settings-modal-grid">' +
-        '<div class="field"><label>سرمایه ($)</label><input type="number" id="modalCapital" value="' + cap + '" min="100"></div>' +
-        '<div class="field"><label>ریسک (%)</label><input type="number" id="modalRisk" value="' + (cfg.DEFAULT_RISK_PERCENT || 1) + '" min="0.1" max="10" step="0.1"></div>' +
-        '<div class="field"><label>تعداد TP</label><select id="modalTpCount">' +
-        '<option value="1"' + sel(cfg.TP_COUNT, 1) + '>۱</option>' +
-        '<option value="2"' + sel(cfg.TP_COUNT, 2) + '>۲</option>' +
-        '<option value="3"' + sel(cfg.TP_COUNT || 3, 3) + '>۳</option></select></div>' +
-        '<div class="field"><label>لات دستی (۰=خودکار)</label><input type="number" id="modalLot" value="' + (cfg.USER_LOT || 0) + '" step="0.01" min="0"></div>' +
-        '<div class="field"><label>ضریب SL (ATR)</label><input type="number" id="modalSl" value="' + (cfg.ATR_SL_MULT || 1.5) + '" step="0.1"></div>' +
-        '<div class="field"><label>ضریب TP1</label><input type="number" id="modalTp1" value="' + (cfg.ATR_TP1_MULT || 2) + '" step="0.1"></div>' +
-        '<div class="field"><label>ضریب TP2</label><input type="number" id="modalTp2" value="' + (cfg.ATR_TP2_MULT || 3.5) + '" step="0.1"></div>' +
-        '<div class="field"><label>ضریب TP3</label><input type="number" id="modalTp3" value="' + (cfg.ATR_TP3_MULT || 5) + '" step="0.1"></div>' +
-        '<div class="field"><label>روش معامله</label><select id="modalTradeMode">' +
-        '<option value="manual">MANUAL — تأیید کاربر</option>' +
-        '<option value="auto">AUTO — اجرای خودکار</option></select></div>' +
-        '<div class="field full" style="font-size:11px;opacity:.65">تایم‌فریم فعال از داشبورد کنترل می‌شود (فعلاً: <b id="modalActiveTfDisplay">' + String(cfg.ACTIVE_TIMEFRAME || "m5").toUpperCase() + '</b>) — بک‌تست هم همین تایم‌فریم را استفاده می‌کند.</div>' +
-        '</div><div class="modal-actions">' +
+        '<div id="settingsModal" class="modal-backdrop sm-backdrop" onclick="if(event.target.id===\'settingsModal\')GoldAI.closeSettingsModal()">' +
+        '<div class="modal-sheet sm-sheet" role="dialog" aria-label="تنظیمات" onclick="event.stopPropagation()">' +
+        '<div class="sm-grabber"></div>' +
+        '<div class="sm-head"><div><h3>⚙️ تنظیمات</h3><p>سرمایه، ریسک و حد سودها</p></div>' +
+        '<button type="button" class="sm-close" onclick="GoldAI.closeSettingsModal()" aria-label="بستن">✕</button></div>' +
+        '<div class="sm-body">' +
+
+        '<div class="sm-mode ' + mode + '"><span class="sm-mode-dot"></span>' +
+        '<div><b>حالت فعلی: ' + (mode === "auto" ? "AUTO (خودکار)" : "MANUAL (دستی)") + '</b>' +
+        '<small>برای عوض کردن، از دکمه‌های MANUAL / AUTO در داشبورد استفاده کنید.</small></div></div>' +
+
+        '<section class="sm-section"><h4><span>💰</span>سرمایه و ریسک</h4><div class="sm-grid">' +
+        num("modalCapital", "سرمایه ($)", cap, 'min="100"') +
+        num("modalRisk", "ریسک هر معامله (%)", (cfg.DEFAULT_RISK_PERCENT || 1), 'min="0.1" max="10" step="0.1"') +
+        num("modalLot", "حجم دستی", (cfg.USER_LOT || 0), 'step="0.01" min="0"', "صفر = حجم خودکار از روی ریسک") +
+        '</div></section>' +
+
+        '<section class="sm-section"><h4><span>🎯</span>حد ضرر و حد سود اول</h4><div class="sm-grid">' +
+        num("modalSl", "ضریب حد ضرر (ATR)", (cfg.ATR_SL_MULT || 1.5), 'step="0.1"') +
+        num("modalTp1", "ضریب حد سود ۱ (ATR)", (cfg.ATR_TP1_MULT || 2), 'step="0.1"') +
+        '</div></section>' +
+
+        '<section class="sm-section sm-manual"><h4><span>✋</span>حد سود دوم و سوم <em>فقط حالت دستی</em></h4>' +
+        '<div class="sm-tp-now">' +
+        '<div class="sm-tp-card"><span>TP2 سیگنال فعلی</span><b>' + (hasSig ? fmt(r.tp2) : "—") + '</b></div>' +
+        '<div class="sm-tp-card"><span>TP3 سیگنال فعلی</span><b>' + (hasSig ? fmt(r.tp3) : "—") + '</b></div>' +
+        '</div>' +
+        '<div class="sm-grid">' +
+        '<label class="sm-field sm-full"><span class="sm-label">تعداد حد سود (دستی)</span><select id="modalTpCount">' +
+        '<option value="1"' + sel(cfg.TP_COUNT, 1) + '>۱ — فقط TP1</option>' +
+        '<option value="2"' + sel(cfg.TP_COUNT, 2) + '>۲ — TP1 و TP2</option>' +
+        '<option value="3"' + sel(cfg.TP_COUNT || 3, 3) + '>۳ — TP1 تا TP3</option></select></label>' +
+        num("modalTp2", "ضریب حد سود ۲", (cfg.ATR_TP2_MULT || 3.5), 'step="0.1"') +
+        num("modalTp3", "ضریب حد سود ۳", (cfg.ATR_TP3_MULT || 5), 'step="0.1"') +
+        '</div><p class="sm-note">در حالت خودکار فقط TP1 به متاتریدر فرستاده می‌شود.</p></section>' +
+
+        '<div class="sm-info">⏱ تایم‌فریم فعال: <b id="modalActiveTfDisplay">' + String(cfg.ACTIVE_TIMEFRAME || "m5").toUpperCase() + '</b> — از بالای داشبورد عوض می‌شود و بک‌تست هم همین را استفاده می‌کند.<br>' +
+        'ℹ️ این تنظیمات روی محاسبات همین صفحه اثر دارد؛ معامله‌های خودکار سرور از تنظیمات خود سرور پیروی می‌کنند.</div>' +
+        '</div>' +
+        '<div class="modal-actions sm-actions">' +
         '<button type="button" class="btn-main" onclick="GoldAI.saveSettingsModal()">💾 ذخیره</button>' +
         '<button type="button" class="btn-ghost" onclick="GoldAI.closeSettingsModal()">بستن</button>' +
         '</div></div></div>';
       document.body.insertAdjacentHTML("beforeend", html);
-      var modeEl = document.getElementById("modalTradeMode");
-      if (modeEl) modeEl.value = cfg.TRADE_MODE === "auto" ? "auto" : "manual";
+      document.body.classList.add("sm-open");
     };
 
     G.closeSettingsModal = function () {
       var m = document.getElementById("settingsModal");
       if (m) m.remove();
+      document.body.classList.remove("sm-open");
     };
 
     G.saveSettingsModal = function () {
@@ -124,7 +158,6 @@
       var tp1 = parseFloat(g("modalTp1") && g("modalTp1").value) || 2;
       var tp2 = parseFloat(g("modalTp2") && g("modalTp2").value) || 3.5;
       var tp3 = parseFloat(g("modalTp3") && g("modalTp3").value) || 5;
-      var tradeMode = (g("modalTradeMode") && g("modalTradeMode").value) || "manual";
 
       if (D.setCapital) D.setCapital(capital);
       var cfg = window.GoldAI_Config;
@@ -135,7 +168,7 @@
       cfg.ATR_TP1_MULT = tp1;
       cfg.ATR_TP2_MULT = tp2;
       cfg.ATR_TP3_MULT = tp3;
-      cfg.TRADE_MODE = tradeMode;
+      // trade mode is NOT changed here any more (see note above openSettingsModal)
 
       var sync = function (id, val) {
         var el = document.getElementById(id);
@@ -149,7 +182,7 @@
         var stored = JSON.parse(localStorage.getItem("goldai_settings") || "{}");
         Object.assign(stored, {
           capital: capital, risk: risk, tpCount: tpCount, userLot: lot,
-           slMult: sl, tp1Mult: tp1, tp2Mult: tp2, tp3Mult: tp3, tradeMode: tradeMode
+           slMult: sl, tp1Mult: tp1, tp2Mult: tp2, tp3Mult: tp3
         });
         localStorage.setItem("goldai_settings", JSON.stringify(stored));
       } catch (e) {}
@@ -209,6 +242,41 @@
       if (bt) { bt.classList.add("hidden"); bt.innerHTML = ""; }
     };
 
+    G.resetBacktest = function () {
+      var box = document.getElementById('backtestSummary');
+      var wrap = document.getElementById('backtestJournalWrap');
+      var table = document.getElementById('backtestJournal');
+      var err = document.getElementById('btRangeError');
+      var empty = document.getElementById('backtestEmptyState');
+      if (box) { box.classList.add('hidden'); box.innerHTML = ''; }
+      if (wrap) wrap.classList.add('hidden');
+      if (table) table.innerHTML = '';
+      if (err) { err.classList.add('hidden'); err.textContent = ''; }
+      if (empty) empty.classList.remove('hidden');
+      G._lastBacktestReport = null;
+    };
+
+    G.deleteBacktestResults = function () {
+      if (!confirm('نتایج بک‌تست فعلی حذف شود؟')) return;
+      G.resetBacktest();
+    };
+
+    // Existing buttons at the bottom of the Backtest panel — do not add new ones.
+    document.getElementById('panel-backtest') && document.getElementById('panel-backtest').addEventListener('click', function (e) {
+      var t = e.target && e.target.closest ? e.target.closest('button') : e.target;
+      if (!t) return;
+      var label = String(t.textContent || '');
+      if (label.indexOf('Reset Backtest') !== -1) {
+        e.preventDefault();
+        e.stopPropagation();
+        G.resetBacktest();
+      } else if (label.indexOf('Delete Results') !== -1) {
+        e.preventDefault();
+        e.stopPropagation();
+        G.deleteBacktestResults();
+      }
+    }, true);
+
     G.runBacktest = async function (btnEl) {
       var box = document.getElementById("backtestSummary");
       var journalWrap = document.getElementById("backtestJournalWrap");
@@ -220,6 +288,8 @@
           return;
         }
         if (btn) { btn.disabled = true; btn.textContent = "⏳ در حال اجرا روی داده واقعی MT5..."; }
+        var empty = document.getElementById("backtestEmptyState");
+        if (empty) empty.classList.add("hidden");
         if (box) { box.classList.remove("hidden"); box.innerHTML = "⏳ در حال دریافت تاریخچه واقعی از MT5 و اجرای Walk-Forward…"; }
 
         var val = function (id, dv) { var el = document.getElementById(id); var v = el ? el.value : null; return (v === null || v === "") ? dv : v; };
@@ -297,7 +367,8 @@
         }
 
         if (journalTable && journalWrap) {
-          var rows = report.journal.slice(-500); // most recent 500 rows for browser perf
+          var executed = (report.journal || []).filter(function (r) { return r.executed; });
+          var rows = executed.slice(-500);
           var head = "<tr style='position:sticky;top:0;background:#14141c'>" +
             ["Time", "Signal", "Conf", "Price", "Executed", "Entry", "SL", "TP", "Exit", "Reason", "P/L", "R", "Bars"]
               .map(function (h) { return "<th style='padding:4px 6px;text-align:left;border-bottom:1px solid #2a2a35'>" + h + "</th>"; }).join("") + "</tr>";
@@ -315,6 +386,9 @@
           }).join("");
           journalTable.innerHTML = head + body;
           journalWrap.classList.remove("hidden");
+          if (executed.length === 0) {
+            journalTable.innerHTML = head + "<tr><td colspan='13' style='padding:10px;opacity:.7'>هیچ معامله اجراشده‌ای در این بازه نبود.</td></tr>";
+          }
         }
       } catch (e) {
         console.error(e);

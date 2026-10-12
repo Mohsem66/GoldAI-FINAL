@@ -1,0 +1,10 @@
+--- /home/claude/orig/backend/worker/engine-loader.js	2026-09-28 11:25:56.628455518 +0000
++++ /home/claude/work/backend/worker/engine-loader.js	2026-09-28 18:29:46.729999473 +0000
+@@ -31,6 +31,7 @@
+   "engines/score.js",
+   "engines/trade-permission.js",
+   "engines/conflict-filter.js",
++  "engines/signal-attribution.js",
+   "engines/risk-guard.js",
+   "engines/trade-management.js",
+   "engines/backtest.js",

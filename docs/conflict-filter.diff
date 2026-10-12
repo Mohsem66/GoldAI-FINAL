@@ -1,0 +1,114 @@
+--- /home/claude/orig/js/engines/conflict-filter.js	2026-09-28 11:26:01.005053702 +0000
++++ /home/claude/work/js/engines/conflict-filter.js	2026-09-28 18:29:46.729740814 +0000
+@@ -80,6 +80,15 @@
+   let primaryReject = null;
+   const edge = Math.abs((score.buyScore || 0) - (score.sellScore || 0));
+ 
++  // --- Attribution instrumentation (observation-only; ATTRIBUTION_ENABLED, default off) ---
++  // Records before/after of each REAL confidence adjustment. Never reads back into logic.
++  const confidenceSteps = (cfg && cfg.ATTRIBUTION_ENABLED === true) ? [] : null;
++  const _cs = function (id, before, after, extra) {
++    if (!confidenceSteps) return;
++    try { confidenceSteps.push(Object.assign({ id: id, before: before, after: after, delta: after - before }, extra || {})); } catch (_) {}
++  };
++  _cs("SEED", confidence, confidence, { source: "score.js", rawSignal: score.signal });
++
+   let regimeInfo = layers.marketRegime || null;
+   if (!regimeInfo && window.GoldAI_MarketRegime) {
+     regimeInfo = window.GoldAI_MarketRegime.buildMarketRegime(layers.adx, layers.structure);
+@@ -124,11 +133,11 @@
+   // Soft technical checks
+   if (!String(signal).includes("WAIT") && layers.ema) {
+     if (signal.includes("BUY") && layers.ema.trend === "BEARISH") {
+-      confidence -= 14;
++      { const _b = confidence; confidence -= 14; _cs("QUALITY_EMA_AGAINST_BUY", _b, confidence); }
+       warnings.push("BUY vs EMA bearish");
+     }
+     if (signal.includes("SELL") && layers.ema.trend === "BULLISH") {
+-      confidence -= 14;
++      { const _b = confidence; confidence -= 14; _cs("QUALITY_EMA_AGAINST_SELL", _b, confidence); }
+       warnings.push("SELL vs EMA bullish");
+     }
+     if (signal.includes("BUY") && layers.ema.trend === "BULLISH") confirms.push("EMA confirms BUY");
+@@ -137,22 +146,22 @@
+ 
+   if (!String(signal).includes("WAIT") && layers.rsi && layers.rsi.rsi != null) {
+     if (signal.includes("BUY") && layers.rsi.rsi >= 78) {
+-      confidence -= 16;
++      { const _b = confidence; confidence -= 16; _cs("QUALITY_RSI_EXTREME_BUY", _b, confidence); }
+       warnings.push("BUY into extreme OB RSI");
+     }
+     if (signal.includes("SELL") && layers.rsi.rsi <= 22) {
+-      confidence -= 16;
++      { const _b = confidence; confidence -= 16; _cs("QUALITY_RSI_EXTREME_SELL", _b, confidence); }
+       warnings.push("SELL into extreme OS RSI");
+     }
+   }
+ 
+   if (!String(signal).includes("WAIT") && layers.structure) {
+     if (signal.includes("BUY") && layers.structure.trend === "BEARISH" && !layers.structure.choch) {
+-      confidence -= 12;
++      { const _b = confidence; confidence -= 12; _cs("QUALITY_STRUCTURE_AGAINST_BUY", _b, confidence); }
+       warnings.push("BUY vs bearish structure");
+     }
+     if (signal.includes("SELL") && layers.structure.trend === "BULLISH" && !layers.structure.choch) {
+-      confidence -= 12;
++      { const _b = confidence; confidence -= 12; _cs("QUALITY_STRUCTURE_AGAINST_SELL", _b, confidence); }
+       warnings.push("SELL vs bullish structure");
+     }
+     if (layers.structure.bos) confirms.push("BOS active");
+@@ -169,7 +178,7 @@
+       rejectReasons.push("REGIME_RANGE");
+       warnings.push("Range regime — entry blocked on scalp TF without strong BOS");
+     } else if (!sq.strongBos) {
+-      confidence -= 12;
++      { const _b = confidence; confidence -= 12; _cs("QUALITY_RANGE_REGIME", _b, confidence); }
+       warnings.push("Range regime — reduced confidence");
+     } else {
+       confirms.push("Range break with strong BOS");
+@@ -177,7 +186,7 @@
+   }
+ 
+   if (!String(signal).includes("WAIT") && sq.weakBos) {
+-    confidence -= 10;
++    { const _b = confidence; confidence -= 10; _cs("QUALITY_WEAK_BOS", _b, confidence); }
+     warnings.push("Weak BOS — structure quality reduced (soft)");
+   }
+ 
+@@ -200,21 +209,23 @@
+         rejectReasons.push("HTF_WEAK");
+         warnings.push("HTF weak — entry blocked (need stronger edge + clear structure)");
+       } else {
+-        confidence -= 18;
++        { const _b = confidence; confidence -= 18; _cs("QUALITY_HTF_WEAK_EXCEPTIONAL", _b, confidence); }
+         qualityReasons.push("HTF_WEAK"); // diagnostic only; does not WAIT or set primaryReject
+         warnings.push("HTF weak — exceptional-edge override (reduced confidence)");
+       }
+     } else if (String(layers.htf.strength || "").toUpperCase() === "MODERATE") {
+-      confidence -= 4;
++      { const _b = confidence; confidence -= 4; _cs("QUALITY_HTF_MODERATE", _b, confidence); }
+     } else if (String(layers.htf.strength || "").toUpperCase() === "STRONG") {
+       confirms.push("HTF strength confirms");
+-      confidence += 4;
++      { const _b = confidence; confidence += 4; _cs("QUALITY_HTF_STRONG", _b, confidence); }
+     }
+   }
+ 
++  const _bClip = confidence;
+   if (confidence > 100) confidence = 100;
+   if (confidence < 0) confidence = 0;
+   confidence = Math.round(confidence);
++  _cs("QUALITY_CLIP_ROUND", _bClip, confidence);
+ 
+   // Low directional edge — quality (unchanged threshold 2.2)
+   if (edge < 2.2 && signal && !String(signal).includes("WAIT")) {
+@@ -260,7 +271,8 @@
+     confirms: confirms.concat(score.confirms || []),
+     diagnostics: buildSignalDiagnostics(score, layers, qualityParts),
+     qualityLayer: true,
+-    waitStage: waitStage
++    waitStage: waitStage,
++    ...(confidenceSteps ? { confidenceSteps: confidenceSteps } : {})
+   };
+ }
+ 

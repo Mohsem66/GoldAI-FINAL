@@ -71,8 +71,16 @@ function analyzeADX(highs, lows, closes, period = 14) {
     result.confidence += 6;
     reasons.push("ADX trending");
   } else {
-    result.regime = "RANGE";
-    reasons.push("ADX range / weak trend");
+    // ADX threshold unchanged (<25). Semantic split only:
+    // balanced DI → actual RANGE; clear DI skew → WEAK (low strength, still directional).
+    const diSkew = Math.abs(plusDI - minusDI) > 2;
+    if (diSkew) {
+      result.regime = "WEAK";
+      reasons.push("ADX weak strength (directional DI, not range)");
+    } else {
+      result.regime = "RANGE";
+      reasons.push("ADX range / weak trend");
+    }
   }
 
   if (plusDI > minusDI + 2) {
